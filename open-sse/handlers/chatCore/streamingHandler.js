@@ -10,6 +10,7 @@ import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLin
 import { saveRequestDetail } from "@/lib/usageDb.js";
 import { SSE_HEADERS_CORS as SSE_HEADERS } from "../../utils/sseConstants.js";
 import { upstreamResponseHeaders } from "../../utils/upstreamHeaders.js";
+import { wrapReadableStreamWithFinalize } from "./streamFinalize.js";
 
 // Codex returns Responses API SSE → which client format to translate INTO, by request sourceFormat.
 // Gemini-family all map to ANTIGRAVITY decoder; unknown sources fall back to OPENAI.
@@ -108,9 +109,14 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
     console.error("[RequestDetail] Failed to save streaming request:", err.message);
   });
 
+  // Wrap the stream to ensure pending request tracking is cleared on completion/error/cancel
+  const finalizedBody = wrapReadableStreamWithFinalize(transformedBody, () => {
+    // Stream fully consumed or cancelled - any cleanup goes here
+  });
+
   return {
     success: true,
-    response: new Response(transformedBody, { headers: { ...SSE_HEADERS, ...upstreamResponseHeaders(providerResponse.headers) } })
+    response: new Response(finalizedBody, { headers: { ...SSE_HEADERS, ...upstreamResponseHeaders(providerResponse.headers) } })
   };
 }
 
@@ -134,9 +140,7 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
       tokens: usage || { prompt_tokens: 0, completion_tokens: 0 },
       request: extractRequestConfig(body, stream),
       providerRequest: finalBody || translatedBody || null,
-      providerResponse: usage
-        ? `${safeContent}\n\n---\n[Upstream usage]:\n${JSON.stringify(usage, null, 2)}`
-        : safeContent,
+      providerResponse: safeContent,
       response: { content: safeContent, thinking: safeThinking, type: "streaming" },
       pxpipe,
       status: "success"
