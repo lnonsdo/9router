@@ -5,14 +5,32 @@ import { extractUsage, mergeUsage, hasValidUsage, estimateUsage, logUsage, addBu
 import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE } from "./streamHelpers.js";
 import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
+import { STREAM_IDLE_TIMEOUT_MS, FETCH_BODY_TIMEOUT_MS } from "../config/runtimeConfig.js";
 
 import { SSE_DONE, SSE_HEADERS, SSE_HEADERS_NO_BUFFER } from "./sseConstants.js";
 
 export { COLORS, formatSSE };
 export { SSE_DONE, SSE_HEADERS, SSE_HEADERS_NO_BUFFER };
 
-// sharedEncoder is stateless — safe to share across streams
+// sharedEncoder is stateless - safe to share across streams
 const sharedEncoder = new TextEncoder();
+
+/**
+ * Race a response body read against a timeout.
+ * Prevents indefinite hangs when the upstream sends headers but stalls on the body.
+ */
+export function withBodyTimeout(promise, timeoutMs = FETCH_BODY_TIMEOUT_MS) {
+  if (timeoutMs <= 0) return promise;
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(`Response body read timeout after ${timeoutMs}ms`);
+      err.name = "BodyTimeoutError";
+      reject(err);
+    }, timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
 /**
  * Stream modes
@@ -105,8 +123,46 @@ export function createSSEStream(options = {}) {
     }
   };
 
+  let skipPassthroughEvent = false; // skip keepalive event blocks
+
+  // Idle timeout state - closes stream if provider stops sending data
+  let lastChunkTime = Date.now();
+  let idleTimer = null;
+  let streamTimedOut = false;
+
+  const clearIdleTimer = () => {
+    if (idleTimer) {
+      clearInterval(idleTimer);
+      idleTimer = null;
+    }
+  };
+
+  // Only OpenAI Chat Completions clients expect [DONE]; Responses API and Claude
+  // terminate on their own protocol events (response.completed / message_stop).
+  const shouldEmitDoneTerminator = sourceFormat !== FORMATS.OPENAI_RESPONSES && sourceFormat !== FORMATS.CLAUDE;
+
   return new TransformStream({
+    start(controller) {
+      // Start idle watchdog - checks every 10s if provider has stopped sending
+      if (STREAM_IDLE_TIMEOUT_MS > 0) {
+        idleTimer = setInterval(() => {
+          if (!streamTimedOut && Date.now() - lastChunkTime > STREAM_IDLE_TIMEOUT_MS) {
+            streamTimedOut = true;
+            clearIdleTimer();
+            const timeoutMsg = `[STREAM] Idle timeout: no data from ${provider || "provider"} for ${STREAM_IDLE_TIMEOUT_MS}ms (model: ${model || "unknown"})`;
+            console.warn(timeoutMsg);
+            appendRequestLog({ model, provider, connectionId, status: `FAILED 504` }).catch(() => {});
+            const timeoutError = new Error(timeoutMsg);
+            timeoutError.name = "StreamIdleTimeoutError";
+            controller.error(timeoutError);
+          }
+        }, 10_000);
+      }
+    },
+
     transform(chunk, controller) {
+      if (streamTimedOut) return;
+      lastChunkTime = Date.now();
       if (!ttftAt) ttftAt = Date.now();
       const text = decoder.decode(chunk, { stream: true });
       buffer += text;
@@ -135,6 +191,16 @@ export function createSSEStream(options = {}) {
           let output;
           let injectedUsage = false;
           let responsesTerminal = false;
+
+          // Skip keepalive event blocks entirely - strict SDKs crash on JSON.parse of empty payloads
+          if (skipPassthroughEvent) {
+            if (!trimmed) skipPassthroughEvent = false;
+            continue;
+          }
+          if (/^event:\s*keepalive\b/i.test(trimmed)) {
+            skipPassthroughEvent = true;
+            continue;
+          }
 
           if (trimmed.startsWith("data:") && trimmed.slice(5).trim() !== "[DONE]") {
             try {
@@ -177,18 +243,69 @@ export function createSSEStream(options = {}) {
                 }
               }
 
+              // OpenAI include_usage: final chunk has choices:[] with valid usage - forward it
+              if (Array.isArray(parsed.choices) && parsed.choices.length === 0) {
+                if (hasValidUsage(parsed.usage)) {
+                  const extracted = extractUsage(parsed);
+                  if (extracted) usage = mergeUsage(usage, extracted);
+                  const output = `data: ${JSON.stringify(parsed)}\n`;
+                  reqLogger?.appendConvertedChunk?.(output);
+                  controller.enqueue(sharedEncoder.encode(output));
+                }
+                continue;
+              }
+
+              // Extract usage BEFORE hasValuableContent check - some providers send
+              // usage-only chunks or chunks with empty delta that would be discarded.
+              if (parsed.usage) {
+                const extracted = extractUsage(parsed);
+                if (extracted) usage = mergeUsage(usage, extracted);
+              }
+
               if (!hasValuableContent(parsed, FORMATS.OPENAI)) {
+                // Even if no valuable content, forward chunks with finish_reason
+                // (they carry the final usage when include_usage is set)
+                if (parsed.choices?.[0]?.finish_reason) {
+                  if (usage) {
+                    const buffered = addBufferToUsage(usage);
+                    parsed.usage = filterUsageForFormat(buffered, FORMATS.OPENAI);
+                  }
+                  const output = `data: ${JSON.stringify(parsed)}\n`;
+                  reqLogger?.appendConvertedChunk?.(output);
+                  controller.enqueue(sharedEncoder.encode(output));
+                }
                 continue;
               }
 
               const delta = parsed.choices?.[0]?.delta;
               const content = delta?.content;
               const reasoning = delta?.reasoning_content;
+
+              // Split combined reasoning+content deltas into separate SSE events.
+              // Clients like LobeChat may skip content when reasoning_content is present.
+              if (delta?.reasoning_content && delta?.content) {
+                const reasoningChunk = typeof structuredClone === "function"
+                  ? structuredClone(parsed)
+                  : JSON.parse(JSON.stringify(parsed));
+                const rDelta = reasoningChunk.choices[0].delta;
+                delete rDelta.content;
+                reasoningChunk.choices[0].finish_reason = null;
+                delete reasoningChunk.usage;
+                totalContentLength += delta.reasoning_content.length;
+                accumulatedThinking += delta.reasoning_content;
+                const rOutput = `data: ${JSON.stringify(reasoningChunk)}\n`;
+                reqLogger?.appendConvertedChunk?.(rOutput);
+                controller.enqueue(sharedEncoder.encode(rOutput));
+                delete delta.reasoning_content;
+              }
+
               if (content && typeof content === "string") {
                 totalContentLength += content.length;
                 accumulatedContent += content;
               }
-              if (reasoning && typeof reasoning === "string") {
+              // Note: reasoning was already accumulated in the split block above.
+              // Only accumulate here when there was no split (standalone reasoning).
+              if (reasoning && typeof reasoning === "string" && !(delta?.content)) {
                 totalContentLength += reasoning.length;
                 accumulatedThinking += reasoning;
               }
@@ -268,7 +385,7 @@ export function createSSEStream(options = {}) {
             sseEmittedCount++;
           }
 
-          if (keepsOpenAIResponsesFormat && !streamDoneSent) {
+          if (keepsOpenAIResponsesFormat && !streamDoneSent && shouldEmitDoneTerminator) {
             const doneOutput = "data: [DONE]\n\n";
             reqLogger?.appendConvertedChunk?.(doneOutput);
             controller.enqueue(sharedEncoder.encode(doneOutput));
@@ -374,6 +491,8 @@ export function createSSEStream(options = {}) {
     },
 
     flush(controller) {
+      clearIdleTimer();
+      if (streamTimedOut) return;
       const evtSummary = Object.entries(eventTypeCounts).map(([k, v]) => `${k}=${v}`).join(",") || "none";
       dbg("SSE", `flush | provider=${provider} | model=${model} | recvLines=${sseLineCount} | emitted=${sseEmittedCount} | events=[${evtSummary}]`);
       trackPendingRequest(model, provider, connectionId, false);
@@ -391,13 +510,13 @@ export function createSSEStream(options = {}) {
             controller.enqueue(sharedEncoder.encode(output));
           }
 
+
           // IMPORTANT: In passthrough mode we still must terminate the SSE stream.
           // Some clients (e.g. OpenClaw) expect the OpenAI-style sentinel:
           //   data: [DONE]\n\n
           // Without it they can hang until timeout and trigger failover.
-          // Gemini-family clients (Antigravity, Vertex, Gemini) reject this sentinel with 400 syntax errors.
-          const isGeminiFamily = provider === "antigravity" || provider === "gemini" || provider === "vertex";
-          if (!streamDoneSent && !isGeminiFamily) {
+          // Responses API and Claude clients terminate on their own protocol events.
+          if (!streamDoneSent && shouldEmitDoneTerminator) {
             const doneOutput = "data: [DONE]\n\n";
             reqLogger?.appendConvertedChunk?.(doneOutput);
             controller.enqueue(sharedEncoder.encode(doneOutput));

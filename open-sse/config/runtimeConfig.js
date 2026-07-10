@@ -48,6 +48,14 @@ function envUrl(name, def) {
 // Configure this for a separate Docker service or remote SearXNG instance.
 export const SEARXNG_URL = envUrl("SEARXNG_URL", "http://localhost:8888/search");
 
+// Parse a non-negative integer env override (0 allowed, for "disable" semantics).
+function envMsAllowZero(name, def) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return def;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 0 ? n : def;
+}
+
 // Inter-chunk stall timeout (once tokens are flowing). Generous headroom so
 // slow reasoning models aren't aborted mid-stream. Env: STREAM_STALL_TIMEOUT_MS.
 export const STREAM_STALL_TIMEOUT_MS = envMs("STREAM_STALL_TIMEOUT_MS", 360 * 1000);
@@ -57,6 +65,18 @@ export const STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs("STREAM_FIRST_CHUNK_TIMEOUT_M
 
 // Fetch connect timeout: abort if upstream doesn't return response headers within this duration
 export const FETCH_CONNECT_TIMEOUT_MS = envMs("FETCH_CONNECT_TIMEOUT_MS", 60 * 1000);
+
+// Idle timeout for SSE streams: after the stream starts, abort if no data arrives
+// within this window. Env: STREAM_IDLE_TIMEOUT_MS (0 = disable).
+export const STREAM_IDLE_TIMEOUT_MS = envMs("STREAM_IDLE_TIMEOUT_MS", 600 * 1000);
+
+// SSE heartbeat interval: synthetic keepalive events sent to the downstream client
+// to prevent proxy/load-balancer timeouts. 0 disables. Env: SSE_HEARTBEAT_INTERVAL_MS.
+export const SSE_HEARTBEAT_INTERVAL_MS = envMsAllowZero("SSE_HEARTBEAT_INTERVAL_MS", 15 * 1000);
+
+// Timeout for reading the full response body after headers arrive.
+// Defaults to FETCH_TIMEOUT_MS (600s). Env: FETCH_BODY_TIMEOUT_MS (0 = disable).
+export const FETCH_BODY_TIMEOUT_MS = envMsAllowZero("FETCH_BODY_TIMEOUT_MS", 600 * 1000);
 
 // Gemini native TTS fetch timeout: abort if Google does not return response headers in time.
 export const GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS = envMs("GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS", 45 * 1000);
