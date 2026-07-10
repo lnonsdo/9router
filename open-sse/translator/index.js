@@ -1,5 +1,7 @@
 import { FORMATS } from "./formats.js";
-import { ensureToolCallIds, fixMissingToolResponses } from "./concerns/toolCall.js";
+import { ensureToolCallIds, fixMissingToolResponses, stripOrphanedToolResults } from "./concerns/toolCall.js";
+import { coerceToolSchemas, sanitizeToolDescriptions } from "./concerns/schemaCoercion.js";
+import { requiresReasoningReplay, cacheReasoningFromAssistantMessage, lookupReasoning, recordReplay } from "../services/reasoningCache.js";
 import { prepareClaudeRequest } from "./formats/claude.js";
 import { cloakClaudeTools, decloakStreamChunk } from "../utils/claudeCloaking.js";
 import { restoreToolNames } from "../utils/opencodeFingerprint.js";
@@ -63,12 +65,28 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
   // Always ensure tool_calls have id (some providers require it)
   ensureToolCallIds(result);
   
+  // Coerce tool schemas: fix string numerics, strip defaults, sanitize descriptions
+  if (result.tools) {
+    result.tools = coerceToolSchemas(result.tools);
+    result.tools = sanitizeToolDescriptions(result.tools);
+  }
+
   // Kiro performs stricter source-aware reconciliation after session replay.
   // The generic helper inserts OpenAI `role: tool` messages, which a direct
   // Claude→Kiro translator cannot consume and which cannot repair partial
   // parallel tool results.
   if (targetFormat !== FORMATS.KIRO) {
     fixMissingToolResponses(result);
+  }
+
+  // Remove orphaned tool_result messages (no matching tool_call in history)
+  stripOrphanedToolResults(result);
+
+  // Normalize roles: developer->system for non-openai targets
+  if (result.messages && Array.isArray(result.messages) && targetFormat !== FORMATS.OPENAI) {
+    for (const msg of result.messages) {
+      if (msg.role === "developer") msg.role = "system";
+    }
   }
 
   // Capture thinking intent from the original (pre-translation) body, before any
@@ -155,6 +173,45 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
   //     result._toolNameMap = toolNameMap;
   //   }
   // }
+
+  // Reasoning replay: re-inject cached reasoning_content for thinking-mode models
+  // (DeepSeek V4, Kimi K2, etc.) to prevent 400 errors when assistant reasoning is missing.
+  const isReasoner = requiresReasoningReplay({ provider: provider || "", model: model || "", thinkingEnabled: !!thinkingIntent });
+  if (isReasoner && result.messages && Array.isArray(result.messages)) {
+    for (const msg of result.messages) {
+      if (msg.role !== "assistant") continue;
+      // Cache reasoning from existing assistant messages
+      if (msg.reasoning_content) {
+        cacheReasoningFromAssistantMessage(msg, provider || "", model || "");
+      }
+      // Re-inject missing reasoning for tool-call messages
+      const hasToolCalls = (msg.tool_calls && msg.tool_calls.length > 0) ||
+        (Array.isArray(msg.content) && msg.content.some(b => b.type === "tool_use"));
+      if (hasToolCalls && !msg.reasoning_content) {
+        const firstToolCallId = msg.tool_calls?.[0]?.id ||
+          (Array.isArray(msg.content) ? msg.content.find(b => b.type === "tool_use")?.id : null);
+        if (firstToolCallId) {
+          const cached = lookupReasoning(firstToolCallId, provider || "", model || "");
+          if (cached) {
+            msg.reasoning_content = cached;
+            recordReplay();
+          }
+        }
+      }
+    }
+  }
+
+  // Strip client-only assistant "echo" fields that strict OpenAI-compatible upstreams
+  // reject with 422. These fields carry no value upstream and are dropped on the
+  // OpenAI target path. Skip for reasoning-replay providers (they need reasoning_content).
+  if (!isReasoner && targetFormat === FORMATS.OPENAI && result.messages && Array.isArray(result.messages)) {
+    const ECHO_FIELDS = ["reasoning_content", "reasoning", "refusal", "annotations", "cache_control"];
+    for (const msg of result.messages) {
+      for (const field of ECHO_FIELDS) {
+        if (msg[field] !== undefined) delete msg[field];
+      }
+    }
+  }
 
   return result;
 }
