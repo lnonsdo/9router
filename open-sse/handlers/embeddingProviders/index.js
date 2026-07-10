@@ -7,8 +7,8 @@ import selfhostedEmbedding from "./selfhostedEmbedding.js";
 
 const OPENAI_COMPAT_PROVIDERS = [
   "openai", "openrouter", "mistral", "voyage-ai", "fireworks",
-  "together", "nebius", "nvidia", "jina-ai",
-  "vercel-ai-gateway",
+  "together", "nebius", "github", "nvidia", "jina-ai",
+  "vercel-ai-gateway", "ark-ap-provider",
 ];
 
 const ADAPTERS = {
