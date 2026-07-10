@@ -123,6 +123,9 @@ import p119 from "./selfhosted-embedding.js";
 import p120 from "./fish-audio.js";
 import p121 from "./alitp-intl.js";
 import p122 from "./xquik.js";
+// local custom providers
+import p123 from "./ark-ap-provider.js";
+import p124 from "./volcengine-sso.js";
 export default [
   p0,
   p1,
@@ -246,4 +249,7 @@ export default [
   p120,
   p121,
   p122,
+  // local custom providers
+  p123,
+  p124,
 ];

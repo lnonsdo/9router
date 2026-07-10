@@ -1,5 +1,6 @@
 // Generic config-driven TTS handlers — dispatched by ttsConfig.format.
 // Each handler accepts { baseUrl, apiKey, text, modelId, voiceId } and returns { base64, format }.
+import { Buffer } from "node:buffer";
 import { responseToBase64, throwUpstreamError } from "./_base.js";
 import minimaxTts from "./minimax.js";
 
@@ -172,6 +173,46 @@ async function openaiCompat({ baseUrl, apiKey, text, modelId, voiceId }) {
   return responseToBase64(res, "mp3");
 }
 
+// Volcengine Agent Plan TTS (HTTP unidirectional): chunked NDJSON of {code, data(base64)},
+// terminates with code:20000000. Auth via X-Api-Key + X-Api-Resource-Id (= modelId).
+async function volcArkTts({ baseUrl, apiKey, text, modelId, voiceId }) {
+  const resourceId = modelId || "seed-tts-2.0";
+  const res = await fetch(baseUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Api-Key": apiKey,
+      "X-Api-Resource-Id": resourceId,
+      "Connection": "keep-alive",
+    },
+    body: JSON.stringify({
+      req_params: {
+        text,
+        ...(voiceId ? { speaker: voiceId } : {}),
+        audio_params: { format: "mp3", sample_rate: 24000 },
+      },
+    }),
+  });
+  if (!res.ok) await throwUpstreamError(res);
+
+  const raw = await res.text();
+  const chunks = [];
+  let errMsg = null;
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let obj;
+    try { obj = JSON.parse(trimmed); } catch { continue; }
+    const code = Number(obj.code ?? 0);
+    if (code === 20000000) break;
+    if (code > 0) { errMsg = obj.message || `Volcengine TTS error (code ${code})`; break; }
+    if (obj.data) chunks.push(Buffer.from(obj.data, "base64"));
+  }
+  if (errMsg) throw new Error(errMsg);
+  if (!chunks.length) throw new Error("Volcengine TTS returned no audio");
+  return { base64: Buffer.concat(chunks).toString("base64"), format: "mp3" };
+}
+
 // format → handler dispatcher
 export const FORMAT_HANDLERS = {
   hyperbolic,
@@ -186,4 +227,5 @@ export const FORMAT_HANDLERS = {
   openai: openaiCompat,
   "minimax-tts": minimaxTts,
   "fish-audio": fishAudio,
+  "volc-ark-tts": volcArkTts,
 };

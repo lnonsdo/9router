@@ -15,7 +15,7 @@ export default function createOpenAIAdapter(providerId) {
       return headers;
     },
     buildBody: (model, body) => {
-      const { prompt, n = 1, size = "1024x1024", quality, style, response_format } = body;
+      const { prompt, n = 1, size = cfg.defaultSize || "1024x1024", quality, style, response_format } = body;
       const full = { model, prompt, n, size };
       if (quality) full.quality = quality;
       if (style) full.style = style;
