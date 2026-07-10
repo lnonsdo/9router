@@ -130,6 +130,10 @@ import p126 from "./dahl.js";
 import p127 from "./atria.js";
 import p129 from "./agnes.js";
 import p130 from "./bai.js";
+// local custom providers
+import p131 from "./ark-ap-provider.js";
+import p132 from "./volcengine-sso.js";
+import p133 from "./alitp-cn.js";
 export default [
   p0,
   p1,
@@ -260,4 +264,8 @@ export default [
   p127,
   p129,
   p130,
+  // local custom providers
+  p131,
+  p132,
+  p133,
 ];
