@@ -42,7 +42,7 @@ export const KIND_EXAMPLE_CONFIG = {
     defaultResponse: `{\n  "data": [\n    { "url": "...", "b64_json": "..." }\n  ]\n}`,
     extraFields: [
       { key: "n", label: "n", type: "number", default: 1, min: 1, max: 4 },
-      { key: "size", label: "Size", type: "select", default: "auto", options: ["auto", "1024x1024", "1024x1536", "1536x1024", "1024x1792", "1792x1024"] },
+      { key: "size", label: "Size", type: "select", default: "auto", options: ["auto","2048x2048", "1024x1024", "1024x1536", "1536x1024", "1024x1792", "1792x1024"] },
       { key: "quality", label: "Quality", type: "select", default: "auto", options: ["auto", "low", "medium", "high", "standard", "hd"] },
       { key: "background", label: "Background", type: "select", default: "auto", options: ["auto", "transparent", "opaque"] },
       { key: "style", label: "Style", type: "select", default: "", options: ["", "vivid", "natural"] },

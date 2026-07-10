@@ -1,0 +1,58 @@
+export default {
+  id: "ark-ap-provider",
+  alias: "ark-ap",
+  aliases: [
+    "volcengine-agent-plan",
+    "ark-agent-plan",
+  ],
+  uiAlias: "ark-ap",
+  display: {
+    name: "Volcengine Agent Plan",
+    icon: "cloud",
+    color: "#1677FF",
+    textIcon: "ARK",
+    website: "https://ark.cn-beijing.volces.com",
+    notice: {
+      apiKeyUrl: "https://console.volcengine.com/ark/region:cn-beijing/subscription/agent-plan",
+    },
+  },
+  category: "apikey",
+  transport: {
+    baseUrl: "https://ark.cn-beijing.volces.com/api/plan/v3/chat/completions",
+    forceStream: true,
+  },
+  models: [
+    { id: "ark-code-latest", name: "Ark Code (Latest)" },
+    { id: "doubao-seed-2.0-code", name: "Doubao Seed 2.0 Code" },
+    { id: "doubao-seed-2.0-pro", name: "Doubao Seed 2.0 Pro" },
+    { id: "doubao-seed-2.0-lite", name: "Doubao Seed 2.0 Lite" },
+    { id: "doubao-seed-2.0-mini", name: "Doubao Seed 2.0 Mini" },
+    { id: "glm-5.2", name: "GLM-5.2" },
+    { id: "kimi-k2.7-code", name: "Kimi K2.7 Code" },
+    { id: "kimi-k2.6", name: "Kimi K2.6" },
+    { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro" },
+    { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" },
+    { id: "minimax-m3", name: "MiniMax M3" },
+    { id: "minimax-m2.7", name: "MiniMax M2.7" },
+    { id: "doubao-embedding-vision", name: "Doubao Embedding Vision", kind: "embedding" },
+    { id: "doubao-seedream-5.0-lite", name: "Doubao Seedream 5.0 Lite", kind: "image", params: ["n", "size", "quality", "response_format"] },
+    { id: "seed-tts-2.0", name: "Seed TTS 2.0", kind: "tts" },
+  ],
+  serviceKinds: ["llm", "embedding", "tts", "image"],
+  ttsConfig: {
+    baseUrl: "https://openspeech.bytedance.com/api/v3/plan/tts/unidirectional",
+    authType: "apikey",
+    authHeader: "x-api-key",
+    format: "volc-ark-tts",
+    defaultModel: "seed-tts-2.0",
+  },
+  embeddingConfig: {
+    baseUrl: "https://ark.cn-beijing.volces.com/api/plan/v3/embeddings",
+    authType: "apikey",
+    authHeader: "bearer",
+  },
+  imageConfig: {
+    baseUrl: "https://ark.cn-beijing.volces.com/api/plan/v3/images/generations",
+    defaultSize: "2048x2048",
+  },
+};

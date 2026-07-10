@@ -127,6 +127,8 @@ export function normalizeUsage(usage) {
   assignNumber("prompt_tokens", usage?.prompt_tokens);
   assignNumber("completion_tokens", usage?.completion_tokens);
   assignNumber("total_tokens", usage?.total_tokens);
+  assignNumber("input_tokens", usage?.input_tokens);
+  assignNumber("output_tokens", usage?.output_tokens);
   assignNumber("cache_read_input_tokens", usage?.cache_read_input_tokens);
   assignNumber("cache_creation_input_tokens", usage?.cache_creation_input_tokens);
   assignNumber("cached_tokens", usage?.cached_tokens);
@@ -276,12 +278,20 @@ export function extractUsage(chunk) {
   }
 
   // OpenAI format (also covers DeepSeek which uses prompt_cache_hit_tokens)
-  if (chunk.usage && typeof chunk.usage === "object" && chunk.usage.prompt_tokens !== undefined) {
+  if (chunk.usage && typeof chunk.usage === "object" &&
+      (chunk.usage.prompt_tokens !== undefined || chunk.usage.input_tokens !== undefined)) {
     return normalizeUsage({
-      prompt_tokens: chunk.usage.prompt_tokens,
-      completion_tokens: chunk.usage.completion_tokens || 0,
-      cached_tokens: chunk.usage.prompt_tokens_details?.cached_tokens || chunk.usage.prompt_cache_hit_tokens,
-      reasoning_tokens: chunk.usage.completion_tokens_details?.reasoning_tokens,
+      prompt_tokens: chunk.usage.prompt_tokens ?? chunk.usage.input_tokens ?? 0,
+      completion_tokens: chunk.usage.completion_tokens ?? chunk.usage.output_tokens ?? 0,
+      cached_tokens:
+        chunk.usage.prompt_tokens_details?.cached_tokens ??
+        chunk.usage.input_tokens_details?.cached_tokens ??
+        chunk.usage.prompt_cache_hit_tokens ??
+        chunk.usage.cached_tokens,
+      reasoning_tokens:
+        chunk.usage.completion_tokens_details?.reasoning_tokens ??
+        chunk.usage.output_tokens_details?.reasoning_tokens ??
+        chunk.usage.reasoning_tokens,
       prompt_tokens_details: chunk.usage.prompt_tokens_details,
       completion_tokens_details: chunk.usage.completion_tokens_details
     });

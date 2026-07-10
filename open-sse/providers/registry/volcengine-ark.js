@@ -28,8 +28,11 @@ export default {
     { id: "Doubao-Seed-Code", name: "Doubao-Seed-Code" },
     { id: "DeepSeek-V4-Flash", name: "DeepSeek-V4-Flash" },
     { id: "DeepSeek-V4-Pro", name: "DeepSeek-V4-Pro" },
-    { id: "GLM-5.1", name: "GLM-5.1" },
+    { id: "GLM-5.2", name: "GLM-5.2" },
     { id: "MiniMax-M2.7", name: "MiniMax-M2.7" },
+    { id: "MiniMax-M3", name: "MiniMax-M3" },
     { id: "Kimi-K2.6", name: "Kimi-K2.6" },
+    { id: "kimi-k2.7-code ", name: "Kimi-K2.7-Code" },
+    { id: "ark-code-latest", name: "Ark-Code-Latest" },
   ],
 };
