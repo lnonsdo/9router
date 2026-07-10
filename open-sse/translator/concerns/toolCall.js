@@ -151,3 +151,50 @@ export function fixMissingToolResponses(body) {
   return body;
 }
 
+// Remove tool_result messages that have no matching tool_call in any assistant message.
+// Client-side history truncation can drop the assistant turn that issued a tool call
+// while leaving its stale tool result behind, which strict upstreams reject.
+export function stripOrphanedToolResults(body) {
+  if (!body.messages || !Array.isArray(body.messages)) return body;
+
+  const knownCallIds = new Set();
+  for (const msg of body.messages) {
+    for (const id of getToolCallIds(msg)) {
+      knownCallIds.add(id);
+    }
+  }
+
+  let changed = false;
+  const filteredMessages = [];
+
+  for (const msg of body.messages) {
+    // OpenAI format: role="tool" with tool_call_id
+    if (msg.role === "tool" && msg.tool_call_id) {
+      if (knownCallIds.has(msg.tool_call_id)) {
+        filteredMessages.push(msg);
+      } else {
+        changed = true;
+      }
+      continue;
+    }
+
+    // Claude format: tool_result blocks in content array
+    if (Array.isArray(msg.content)) {
+      const cleanedContent = msg.content.filter(block => {
+        if (block?.type !== "tool_result") return true;
+        return typeof block.tool_use_id === "string" && knownCallIds.has(block.tool_use_id);
+      });
+      if (cleanedContent.length !== msg.content.length) {
+        changed = true;
+        if (cleanedContent.length === 0) continue;
+        msg.content = cleanedContent;
+      }
+    }
+    filteredMessages.push(msg);
+  }
+
+  if (!changed) return body;
+  body.messages = filteredMessages;
+  return body;
+}
+

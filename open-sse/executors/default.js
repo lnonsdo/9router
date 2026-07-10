@@ -67,7 +67,7 @@ export class DefaultExecutor extends BaseExecutor {
     super(provider, PROVIDERS[provider] || PROVIDERS.openai);
   }
 
-  transformRequest(model, body) {
+  transformRequest(model, body, stream) {
     const transformed = this.applyJsonSchemaFallback(body);
 
     if (transformed && typeof transformed === "object") {
@@ -76,6 +76,36 @@ export class DefaultExecutor extends BaseExecutor {
         delete transformed.client_metadata;
       }
       stripUnsupportedParams(this.provider, model, transformed);
+
+      // Inject stream_options.include_usage for streaming OpenAI-compatible requests.
+      // Many providers (Volcengine, DeepSeek, etc.) only return usage in the final
+      // SSE chunk when include_usage is true. Use the executor `stream` flag (not
+      // body.stream) because forceStream providers send stream:true upstream even
+      // when the client requested JSON (body.stream may still be false).
+      const qwenBlocksStreamOptions = this.provider === "qwen" &&
+        (Boolean(transformed.thinking) || Boolean(transformed.enable_thinking));
+
+      if (!stream || qwenBlocksStreamOptions) {
+        // Not streaming upstream - remove stream_options (upstream rejects it)
+        if (transformed.stream_options) delete transformed.stream_options;
+        // Ensure body.stream matches actual upstream mode
+        if (stream) {
+          transformed.stream = true;
+        } else {
+          delete transformed.stream_options;
+          // Don't force stream:false if body already has stream:true (forceStream providers
+          // where chatCore set stream=true will arrive here with stream=true, not false).
+          // Only set false when the body originally had stream defined.
+          if (transformed.stream === undefined) transformed.stream = false;
+        }
+      } else {
+        // Streaming upstream - inject stream_options if not already set
+        transformed.stream = true;
+        transformed.stream_options = {
+          ...(transformed.stream_options || {}),
+          include_usage: true,
+        };
+      }
     }
 
     return injectReasoningContent({ provider: this.provider, model, body: transformed });

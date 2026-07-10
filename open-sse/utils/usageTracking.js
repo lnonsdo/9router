@@ -18,7 +18,42 @@ export const COLORS = {
 };
 
 // Buffer tokens to prevent context errors
-const BUFFER_TOKENS = 2000;
+const DEFAULT_BUFFER_TOKENS = 2000;
+
+let _cachedBuffer = null;
+let _cacheTimestamp = 0;
+const BUFFER_CACHE_TTL_MS = 30_000;
+
+function getBufferTokens() {
+  const now = Date.now();
+  const isExpired = _cachedBuffer !== null && now - _cacheTimestamp >= BUFFER_CACHE_TTL_MS;
+
+  if (_cachedBuffer !== null && !isExpired) {
+    return _cachedBuffer;
+  }
+
+  // Priority: env var > default
+  const envVal = process.env.USAGE_TOKEN_BUFFER;
+  if (envVal !== undefined && envVal !== "") {
+    const parsed = parseInt(envVal, 10);
+    if (!isNaN(parsed) && parsed >= 0) {
+      _cachedBuffer = parsed;
+      _cacheTimestamp = now;
+      return parsed;
+    }
+  }
+
+  if (_cachedBuffer === null) {
+    _cachedBuffer = DEFAULT_BUFFER_TOKENS;
+  }
+  _cacheTimestamp = now;
+  return _cachedBuffer;
+}
+
+export function invalidateBufferTokensCache() {
+  _cachedBuffer = null;
+  _cacheTimestamp = 0;
+}
 
 // Get HH:MM:SS timestamp
 function getTimeString() {
@@ -33,21 +68,24 @@ function getTimeString() {
 export function addBufferToUsage(usage) {
   if (!usage || typeof usage !== "object") return usage;
 
+  const buffer = getBufferTokens();
+  if (buffer === 0) return usage;
+
   const result = { ...usage };
 
   // Claude format
   if (result.input_tokens !== undefined) {
-    result.input_tokens += BUFFER_TOKENS;
+    result.input_tokens += buffer;
   }
 
   // OpenAI format
   if (result.prompt_tokens !== undefined) {
-    result.prompt_tokens += BUFFER_TOKENS;
+    result.prompt_tokens += buffer;
   }
 
   // Calculate or update total_tokens
   if (result.total_tokens !== undefined) {
-    result.total_tokens += BUFFER_TOKENS;
+    result.total_tokens += buffer;
   } else if (result.prompt_tokens !== undefined && result.completion_tokens !== undefined) {
     // Calculate total_tokens if not exists
     result.total_tokens = result.prompt_tokens + result.completion_tokens;
@@ -90,7 +128,9 @@ export function filterUsageForFormat(usage, targetFormat) {
     // OpenAI format (default for OPENAI, CODEX, KIRO, etc.)
     default: [
       'prompt_tokens', 'completion_tokens', 'total_tokens',
+      'input_tokens', 'output_tokens',
       'cached_tokens', 'reasoning_tokens',
+      'cache_read_input_tokens', 'cache_creation_input_tokens',
       'prompt_tokens_details', 'completion_tokens_details',
       'estimated'
     ]
@@ -342,21 +382,56 @@ export function mergeUsage(prev, next) {
 }
 
 /**
+ * CJK-aware token estimation: count CJK ideographs separately (each ~1 token),
+ * then split remaining text on token boundaries with a sub-word correction factor.
+ */
+function estimateTokenCount(text) {
+  if (!text || typeof text !== "string") return 0;
+
+  // Count CJK ideographs separately - each is roughly 1 token
+  const cjkMatches = text.match(/[\u3000-\u9fff\uf900-\ufaff\u{20000}-\u{2fa1f}]/gu);
+  const cjkCount = cjkMatches ? cjkMatches.length : 0;
+
+  // Remove CJK chars for the remaining estimation
+  const nonCJK = text.replace(/[\u3000-\u9fff\uf900-\ufaff]/g, " ");
+
+  // Split on token boundaries: whitespace, punctuation, camelCase transitions
+  const tokens = nonCJK
+    .split(/(\s+|[^\w\s]|(?<=[a-z])(?=[A-Z]))/)
+    .filter(t => t && t.trim().length > 0);
+
+  // Apply sub-word correction: BPE tokenizers often split long words
+  const estimatedNonCJK = Math.ceil(tokens.length * 1.3);
+
+  return cjkCount + estimatedNonCJK;
+}
+
+// ~6 chars/token for JSON schemas (more verbose per token than plain text)
+const CHARS_PER_TOKEN_SCHEMA = 6;
+
+/**
  * Estimate input tokens from request body
- * Calculate total body size for more accurate estimation
+ * Separates tool schema estimation (more verbose) from message body.
  */
 export function estimateInputTokens(body) {
   if (!body || typeof body !== "object") return 0;
 
   try {
-    // Calculate total body size (includes messages, tools, system, thinking config, etc.)
-    const bodyStr = JSON.stringify(body);
-    const totalChars = bodyStr.length;
+    let toolTokens = 0;
+    let messageTokens = 0;
 
-    // Estimate: ~4 chars per token (rough average across all tokenizers)
-    return Math.ceil(totalChars / 4);
+    // Separate tool definitions from the rest of the body
+    if (body.tools && Array.isArray(body.tools)) {
+      const toolStr = JSON.stringify(body.tools);
+      toolTokens = Math.ceil(toolStr.length / CHARS_PER_TOKEN_SCHEMA);
+      const { tools, ...bodyWithoutTools } = body;
+      messageTokens = estimateTokenCount(JSON.stringify(bodyWithoutTools));
+    } else {
+      messageTokens = estimateTokenCount(JSON.stringify(body));
+    }
+
+    return messageTokens + toolTokens;
   } catch (err) {
-    // Fallback if stringify fails
     return 0;
   }
 }
@@ -366,7 +441,7 @@ export function estimateInputTokens(body) {
  */
 export function estimateOutputTokens(contentLength) {
   if (!contentLength || contentLength <= 0) return 0;
-  return Math.max(1, Math.floor(contentLength / 4));
+  return Math.max(1, Math.ceil(contentLength / 3.5));
 }
 
 /**
