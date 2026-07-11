@@ -7,7 +7,7 @@ import PropTypes from "prop-types";
 import { Badge, Toggle, Tooltip } from "@/shared/components";
 import CooldownTimer from "./CooldownTimer";
 
-export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onDelete, oneByOneStatus = null, autoPing = null }) {
+export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onDelete, oneByOneStatus = null, autoPing = null, extraAction = null }) {
   const [showProxyDropdown, setShowProxyDropdown] = useState(false);
   const [updatingProxy, setUpdatingProxy] = useState(false);
   const proxyDropdownRef = useRef(null);
@@ -309,6 +309,18 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
               </button>
             </Tooltip>
           )}
+          {extraAction && (
+            <Tooltip text={extraAction.tooltip || ""}>
+              <button
+                onClick={extraAction.onClick}
+                disabled={extraAction.disabled}
+                className="flex w-full flex-col items-center rounded px-2 py-1 text-text-muted transition-colors hover:bg-black/5 hover:text-primary dark:hover:bg-white/5 disabled:opacity-50"
+              >
+                <span className="material-symbols-outlined text-[18px]">{extraAction.icon || "sync"}</span>
+                <span className="text-[10px] leading-tight">{extraAction.label}</span>
+              </button>
+            </Tooltip>
+          )}
           <button onClick={onEdit} className="flex flex-col items-center rounded px-2 py-1 text-text-muted hover:bg-black/5 hover:text-primary dark:hover:bg-white/5">
             <span className="material-symbols-outlined text-[18px]">edit</span>
             <span className="text-[10px] leading-tight">Edit</span>
@@ -369,5 +381,12 @@ ConnectionRow.propTypes = {
     scheduleOn: PropTypes.bool,
     scheduleSummary: PropTypes.string,
     onConfigure: PropTypes.func,
+  }),
+  extraAction: PropTypes.shape({
+    icon: PropTypes.string,
+    label: PropTypes.string,
+    tooltip: PropTypes.string,
+    onClick: PropTypes.func,
+    disabled: PropTypes.bool,
   }),
 };
