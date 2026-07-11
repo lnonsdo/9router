@@ -126,6 +126,11 @@ export const KIMCHI_CONFIG = { ...PROVIDER_OAUTH["kimchi"] };
 // Grok CLI / Grok Build OAuth Configuration (Device Code Flow)
 // Endpoint: cli-chat-proxy.grok.com — same client_id as xai, different flow + scopes
 export const GROK_CLI_CONFIG = { ...PROVIDER_OAUTH["grok-cli"] };
+// Volcengine SSO Configuration (arkcli subprocess device_code-like flow)
+// No registry oauth block - flow is handled entirely via arkcli subprocess.
+export const VOLCENGINE_SSO_CONFIG = {
+  flowType: "volcengine_sso",
+};
 
 // Muse — subscription device code flow to auth.meta.com, no refresh
 // (Meta rejects refresh_token grants; the minted Model API key never expires).
@@ -254,4 +259,11 @@ export const PROVIDERS = {
   WINDSURF: "windsurf",
   GLM: "glm",
   ZED: "zed",
+  VOLCENGINE_SSO: "volcengine-sso",
+};
+
+// Volcengine SSO Configuration (arkcli subprocess device_code-like flow)
+// No registry oauth block - flow is handled entirely via arkcli subprocess.
+export const VOLCENGINE_SSO_CONFIG = {
+  flowType: "volcengine_sso",
 };
