@@ -81,6 +81,8 @@ export default function ProviderDetailPage() {
   const [oneByOneSummary, setOneByOneSummary] = useState(null);
   const stopOneByOneRef = useRef(false);
   const [importingQoderModels, setImportingQoderModels] = useState(false);
+  const [syncingConnIds, setSyncingConnIds] = useState(() => new Set());
+  const [syncResults, setSyncResults] = useState({});
   const { copied, copy } = useCopyToClipboard();
 
   const AG_RISK_STORAGE_KEY = "ag_risk_confirmed";
@@ -939,6 +941,31 @@ export default function ProviderDetailPage() {
     return applyProxyAssignments(targets);
   };
 
+  const handleSyncApiKeys = async (conn) => {
+    try {
+      setSyncingConnIds(prev => new Set(prev).add(conn.id));
+      setSyncResults(prev => { const { [conn.id]: _, ...rest } = prev; return rest; });
+      const arkcliHome = conn?.providerSpecificData?.volcArkcliHome;
+      if (!arkcliHome) {
+        setSyncResults(prev => ({ ...prev, [conn.id]: { error: "No arkcliHome found for this connection" } }));
+        return;
+      }
+      const res = await fetch(`/api/oauth/volcengine-sso/sync-apikeys`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          arkcliHome,
+          accountName: conn.displayName || conn.name || conn.email,
+        }),
+      });
+      const data = await res.json();
+      setSyncResults(prev => ({ ...prev, [conn.id]: data }));
+    } catch (err) {
+      setSyncResults(prev => ({ ...prev, [conn.id]: { success: false, error: err.message } }));
+    } finally {
+      setSyncingConnIds(prev => { const next = new Set(prev); next.delete(conn.id); return next; });
+    }
+  };
 
   const isSelected = (connectionId) => selectedConnectionIds.includes(connectionId);
 
@@ -994,6 +1021,18 @@ export default function ProviderDetailPage() {
                 }}
                 onDelete={() => handleDelete(conn.id)}
                 oneByOneStatus={oneByOneResults[conn.id] || null}
+                extraAction={providerId === "volcengine-sso" && conn.providerSpecificData?.volcArkcliHome ? (() => {
+                  const syncing = syncingConnIds.has(conn.id);
+                  const result = syncResults[conn.id];
+                  const tooltip = syncing ? "Syncing..." : (result?.success ? `Synced ${result.count} key(s)` : (result?.error || "Sync API Keys to Ark providers"));
+                  return {
+                    icon: "sync",
+                    label: "Sync",
+                    tooltip,
+                    onClick: () => handleSyncApiKeys(conn),
+                    disabled: syncing,
+                  };
+                })() : null}
               />
             </div>
           </div>

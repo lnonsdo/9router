@@ -47,6 +47,9 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   const [authMode, setAuthMode] = useState("browser"); // "browser" | "paste-token"
   const [pasteToken, setPasteToken] = useState("");
   const [ideStatus, setIdeStatus] = useState(null);
+  const [syncingKeys, setSyncingKeys] = useState(false);
+  const [syncResult, setSyncResult] = useState(null);
+  const [ssoConnection, setSsoConnection] = useState(null);
   const popupRef = useRef(null);
   const pollingAbortRef = useRef(false);
   const openedRef = useRef(false);
@@ -234,6 +237,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         "codebuddy-intl",
         "qoder",
         "grok-cli",
+        "volcengine-sso",
       ];
       if (deviceCodeProviders.includes(provider)) {
         setIsDeviceCode(true);
@@ -277,6 +281,13 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
           : (provider === "kimi" || provider === "kimi-coding")
           ? { _kimiDeviceId: data._kimiDeviceId }
           : null;
+
+        // Volcengine SSO: no polling, user pastes auth code manually
+        if (data._volcengineSso) {
+          setStep("input");
+          return;
+        }
+
         startPolling(
           data.device_code,
           data.codeVerifier,
@@ -872,6 +883,72 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
           </>
         )}
 
+        {/* Volcengine SSO: Manual auth code input */}
+        {step === "input" && isDeviceCode && deviceData?._volcengineSso && (
+          <>
+            <div className="space-y-4">
+              <div>
+                <p className="text-sm font-medium mb-2">
+                  Step 1: Open this URL in your browser to complete Volcengine SSO login
+                </p>
+                <div className="flex gap-2">
+                  <Input value={deviceLoginUrl} readOnly className="flex-1 font-mono text-xs" />
+                  <Button variant="secondary" icon={copied === "login_url" ? "check" : "content_copy"} onClick={() => copy(deviceLoginUrl, "login_url")} disabled={!deviceLoginUrl}>
+                    Copy
+                  </Button>
+                  <Button variant="secondary" icon="open_in_new" onClick={() => window.open(deviceLoginUrl, "_blank", "noopener,noreferrer")} disabled={!deviceLoginUrl}>
+                    Open
+                  </Button>
+                </div>
+              </div>
+
+              <div>
+                <p className="text-sm font-medium mb-2">
+                  Step 2: After login, copy the authorization code shown in the browser and paste it here
+                </p>
+                <p className="text-xs text-text-muted mb-2">
+                  The code is a base64 string displayed on the Volcengine login page.
+                </p>
+                <Input
+                  value={callbackUrl}
+                  onChange={(e) => setCallbackUrl(e.target.value)}
+                  placeholder="Paste authorization code here..."
+                  className="font-mono text-sm"
+                />
+                <div className="flex justify-end gap-2 mt-4">
+                  <Button variant="ghost" onClick={handleClose}>
+                    Cancel
+                  </Button>
+                  <Button
+                    onClick={async () => {
+                      try {
+                        const code = callbackUrl.trim();
+                        if (!code) return;
+                        const res = await fetch(`/api/oauth/volcengine-sso/complete-sso`, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ code, arkcliHome: deviceData?._arkcliHome }),
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.error);
+                        setSsoConnection(data.connection);
+                        setStep("success");
+                        onSuccess?.();
+                      } catch (err) {
+                        setError(err.message);
+                        setStep("error");
+                      }
+                    }}
+                    disabled={!callbackUrl.trim()}
+                  >
+                    Complete Login
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+
         {/* Success Step */}
         {step === "success" && (
           <div className="text-center py-6">
@@ -882,6 +959,47 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
             <p className="text-sm text-text-muted mb-4">
               Your {providerInfo.name} account has been connected.
             </p>
+
+            {/* Volcengine SSO: Sync API Keys to volcengine-ark / ark-ap-provider */}
+            {provider === "volcengine-sso" && ssoConnection && (
+              <div className="mb-4 space-y-2">
+                {syncResult?.success ? (
+                  <p className="text-sm text-green-600">
+                    Synced {syncResult.count} API Key(s) to volcengine-ark and ark-ap-provider.
+                  </p>
+                ) : syncResult?.error ? (
+                  <p className="text-sm text-red-600">{syncResult.error}</p>
+                ) : null}
+                <Button
+                  variant="secondary"
+                  onClick={async () => {
+                    try {
+                      setSyncingKeys(true);
+                      setSyncResult(null);
+                      const res = await fetch(`/api/oauth/volcengine-sso/sync-apikeys`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          arkcliHome: deviceData?._arkcliHome,
+                          accountName: ssoConnection.displayName || ssoConnection.email,
+                        }),
+                      });
+                      const data = await res.json();
+                      setSyncResult(data);
+                    } catch (err) {
+                      setSyncResult({ success: false, error: err.message });
+                    } finally {
+                      setSyncingKeys(false);
+                    }
+                  }}
+                  disabled={syncingKeys}
+                  fullWidth
+                >
+                  {syncingKeys ? "Syncing..." : "Sync API Keys to Ark Providers"}
+                </Button>
+              </div>
+            )}
+
             <Button onClick={handleClose} fullWidth>
               Done
             </Button>
