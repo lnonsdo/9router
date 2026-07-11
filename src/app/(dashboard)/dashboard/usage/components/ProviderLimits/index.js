@@ -30,6 +30,7 @@ import {
   QUOTA_CACHE_KEY,
   REFRESH_INTERVAL_MS,
   CLAUDE_REFRESH_INTERVAL_MS,
+  VOLCENGINE_REFRESH_INTERVAL_MS,
   DEPLETED_QUOTA_THRESHOLD,
   AUTO_REFRESH_STORAGE_KEY,
   CONNECTIONS_PAGE_SIZE,
@@ -470,10 +471,16 @@ export default function ProviderLimits() {
     setCountdown(60);
 
     // Throttle Claude: poll its quota every Nth auto-tick (manual force bypasses)
+    // Throttle Volcengine SSO: arkcli subprocess is heavy, poll every 5 min
     const tick = (tickCountRef.current += 1);
     const claudeEvery = Math.round(CLAUDE_REFRESH_INTERVAL_MS / REFRESH_INTERVAL_MS);
-    const shouldFetch = (conn) =>
-      force || conn.provider !== "claude" || tick % claudeEvery === 0;
+    const volcEvery = Math.round(VOLCENGINE_REFRESH_INTERVAL_MS / REFRESH_INTERVAL_MS);
+    const shouldFetch = (conn) => {
+      if (force) return true;
+      if (conn.provider === "claude") return tick % claudeEvery === 0;
+      if (conn.provider === "volcengine-sso") return tick % volcEvery === 0;
+      return true;
+    };
 
     try {
       const visibleConnections = await fetchConnections(page);

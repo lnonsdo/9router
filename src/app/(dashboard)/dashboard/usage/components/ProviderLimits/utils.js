@@ -5,6 +5,8 @@ export const QUOTA_CACHE_KEY = "quotaCacheData";
 export const REFRESH_INTERVAL_MS = 60000;
 // Claude usage/quota endpoint rate-limits; poll it less often than other providers
 export const CLAUDE_REFRESH_INTERVAL_MS = 600000;
+// Volcengine SSO uses arkcli subprocess (heavy); poll every 5 minutes
+export const VOLCENGINE_REFRESH_INTERVAL_MS = 300000;
 export const DEPLETED_QUOTA_THRESHOLD = 5;
 export const AUTO_REFRESH_STORAGE_KEY = "quotaAutoRefresh";
 export const CONNECTIONS_PAGE_SIZE = 20;
@@ -490,6 +492,10 @@ export function parseQuotaData(provider, data) {
         // Grok Build credits (on-demand window + prepaid balance).
         // Do NOT forward absolute `remaining` — getRemainingPercentage treats
         // it as a 0–100 percentage (same as Qoder). Use remainingPercentage.
+      case "volcengine-sso":
+        // Volcengine returns quotas for AgentPlan (AFP) and CodingPlan,
+        // each with 5h/weekly/monthly (AgentPlan) or session/weekly/monthly
+        // (CodingPlan) periods. Some periods only have percent (CodingPlan).
         if (data.quotas) {
           Object.entries(data.quotas).forEach(([name, quota]) => {
             normalizedQuotas.push({

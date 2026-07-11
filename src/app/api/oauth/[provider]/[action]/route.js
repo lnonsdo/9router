@@ -188,7 +188,7 @@ export async function GET(request, { params }) {
 
     if (action === "device-code") {
       const providerData = getProvider(provider);
-      if (providerData.flowType !== "device_code") {
+      if (providerData.flowType !== "device_code" && providerData.flowType !== "volcengine_sso") {
         return NextResponse.json({ error: "Provider does not support device code flow" }, { status: 400 });
       }
 
@@ -215,6 +215,7 @@ export async function GET(request, { params }) {
         "codebuddy-intl",
         "qoder",
         "grok-cli",
+        "volcengine-sso",
       ];
       let deviceData;
       if (noPkceDeviceProviders.includes(provider)) {
@@ -445,6 +446,121 @@ export async function POST(request, { params }) {
       const { code, state } = body;
       const connection = await completeXaiManualCode(String(code || "").trim(), String(state || "").trim());
       return NextResponse.json({ success: true, connection });
+    }
+
+    if (action === "complete-sso") {
+      if (provider !== "volcengine-sso") {
+        return NextResponse.json({ error: "complete-sso only supported for volcengine-sso" }, { status: 400 });
+      }
+      const { code: authCode, arkcliHome } = body;
+      if (!authCode) {
+        return NextResponse.json({ error: "Authorization code is required" }, { status: 400 });
+      }
+      if (!arkcliHome) {
+        return NextResponse.json({ error: "arkcliHome is required" }, { status: 400 });
+      }
+
+      const { completeSsoLogin, readArkcliCredentials } = await import("@/lib/volcengine/ssoLogin.js");
+      const result = await completeSsoLogin(authCode, arkcliHome);
+      if (!result.success) {
+        return NextResponse.json({ error: result.error || "SSO login failed" }, { status: 400 });
+      }
+
+      const credentials = await readArkcliCredentials(result.arkcliHome);
+      if (!credentials) {
+        return NextResponse.json({ error: "Login completed but failed to read credentials" }, { status: 500 });
+      }
+
+      const connection = await createProviderConnection({
+        provider: "volcengine-sso",
+        authType: "oauth",
+        email: credentials.volcUserName
+          ? `${credentials.volcUserName}@volcengine`
+          : `volc-${credentials.volcAccountId}`,
+        name: credentials.volcUserName || `Volcengine ${credentials.volcAccountId}`,
+        accessToken: credentials.volcIdToken,
+        refreshToken: credentials.volcRefreshToken,
+        expiresAt: credentials.volcStsExpiresAt
+          ? new Date(credentials.volcStsExpiresAt).toISOString()
+          : null,
+        testStatus: "active",
+        providerSpecificData: {
+          volcAk: credentials.volcAk,
+          volcSk: credentials.volcSk,
+          volcSessionToken: credentials.volcSessionToken,
+          volcStsExpiresAt: credentials.volcStsExpiresAt,
+          volcRefreshToken: credentials.volcRefreshToken,
+          volcIdToken: credentials.volcIdToken,
+          volcClientId: credentials.volcClientId,
+          volcUserId: credentials.volcUserId,
+          volcAccountId: credentials.volcAccountId,
+          volcUserName: credentials.volcUserName,
+          volcIdentityDir: credentials.volcIdentityDir,
+          volcArkcliHome: credentials.volcArkcliHome,
+        },
+      });
+
+      return NextResponse.json({
+        success: true,
+        connection: {
+          id: connection.id,
+          provider: connection.provider,
+          email: connection.email,
+          displayName: connection.displayName,
+        },
+      });
+    }
+
+    if (action === "sync-apikeys") {
+      if (provider !== "volcengine-sso") {
+        return NextResponse.json({ error: "sync-apikeys only supported for volcengine-sso" }, { status: 400 });
+      }
+      const { arkcliHome, accountName } = body;
+      if (!arkcliHome) {
+        return NextResponse.json({ error: "arkcliHome is required" }, { status: 400 });
+      }
+
+      const { listArkcliApiKeys } = await import("@/lib/volcengine/ssoLogin.js");
+      const { keys: apiKeys, error: listError } = await listArkcliApiKeys(arkcliHome);
+
+      if (listError) {
+        return NextResponse.json({
+          success: false,
+          error: `同步失败：${listError}`,
+        });
+      }
+
+      if (apiKeys.length === 0) {
+        return NextResponse.json({
+          success: false,
+          error: "该账户没有 API Key，请先在火山控制台创建",
+          noKeys: true,
+        });
+      }
+
+      // Sync each API Key to the correct provider based on profile type:
+      // - agent-plan / coding-plan -> ark-ap-provider (plan-based, /api/plan/ endpoint)
+      // - platform (控制台按量)    -> volcengine-ark (pay-as-you-go, /api/coding/ endpoint)
+      const synced = [];
+      for (const key of apiKeys) {
+        const isPlanKey = key.id?.startsWith("config:") && /agent-plan|coding-plan/.test(key.name || "");
+        const targetProvider = isPlanKey ? "ark-ap-provider" : "volcengine-ark";
+        const name = accountName ? `${accountName} (${key.name})` : key.name;
+        await createProviderConnection({
+          provider: targetProvider,
+          authType: "apikey",
+          name,
+          apiKey: key.apiKey,
+          testStatus: "active",
+        });
+        synced.push({ provider: targetProvider, name, keyName: key.name });
+      }
+
+      return NextResponse.json({
+        success: true,
+        synced,
+        count: synced.length,
+      });
     }
 
     return NextResponse.json({ error: "Unknown action" }, { status: 400 });

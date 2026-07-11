@@ -22,6 +22,7 @@ import {
   getVercelAiGatewayUsage,
   getQoderUsage,
 } from "./usage/misc.js";
+import { getVolcengineArkUsage } from "./usage/volcengine-ark.js";
 
 /**
  * Get usage data for a provider connection
@@ -54,6 +55,7 @@ const USAGE_HANDLERS = {
   "grok-cli": (c) => getGrokCliUsage(c.accessToken, c.providerSpecificData, c.proxyOptions),
   kimi: (c) => getKimiUsage(c.accessToken, c.apiKey, c.proxyOptions, c.providerSpecificData),
   deepseek: (c) => getDeepseekUsage(c.apiKey, c.proxyOptions),
+  "volcengine-sso": (c) => getVolcengineArkUsage(c, c.providerSpecificData, c.proxyOptions),
 };
 
 export async function getUsageForProvider(connection, proxyOptions = null, options = {}) {

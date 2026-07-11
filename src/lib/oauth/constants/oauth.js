@@ -123,6 +123,11 @@ export const KIMCHI_CONFIG = { ...PROVIDER_OAUTH["kimchi"] };
 // Grok CLI / Grok Build OAuth Configuration (Device Code Flow)
 // Endpoint: cli-chat-proxy.grok.com — same client_id as xai, different flow + scopes
 export const GROK_CLI_CONFIG = { ...PROVIDER_OAUTH["grok-cli"] };
+// Volcengine SSO Configuration (arkcli subprocess device_code-like flow)
+// No registry oauth block - flow is handled entirely via arkcli subprocess.
+export const VOLCENGINE_SSO_CONFIG = {
+  flowType: "volcengine_sso",
+};
 
 // Trae (ByteDance marscode) OAuth — authorization_code flow with local callback.
 //   1) POST GetLoginGuidance {loginTraceID} → {Result.LoginHost}
@@ -223,4 +228,11 @@ export const PROVIDERS = {
   TRAE: "trae",
   WINDSURF: "windsurf",
   ZED: "zed",
+  VOLCENGINE_SSO: "volcengine-sso",
+};
+
+// Volcengine SSO Configuration (arkcli subprocess device_code-like flow)
+// No registry oauth block - flow is handled entirely via arkcli subprocess.
+export const VOLCENGINE_SSO_CONFIG = {
+  flowType: "volcengine_sso",
 };
