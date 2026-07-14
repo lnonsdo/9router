@@ -458,6 +458,13 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   if (!clientRequestedStreaming && providerRequiresStreaming) {
     const result = await handleForcedSSEToJson({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, customToolNames, trackDone, appendLog });
     if (result) { streamController.handleComplete(); return result; }
+    // SSE-to-JSON detection failed (non-standard content-type from upstream).
+    // Fall through to nonStreamingHandler which does its own content-type
+    // sniffing and handles both JSON and SSE bodies — never leak SSE to a
+    // JSON-expecting client.
+    const fallbackResult = await handleNonStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat, reqLogger, toolNameMap, trackDone, appendLog });
+    streamController.handleComplete();
+    return fallbackResult;
   }
 
   // True non-streaming response

@@ -293,7 +293,11 @@ export function createSSEStream(options = {}) {
                 delete reasoningChunk.usage;
                 totalContentLength += delta.reasoning_content.length;
                 accumulatedThinking += delta.reasoning_content;
-                const rOutput = `data: ${JSON.stringify(reasoningChunk)}\n`;
+                // Emit reasoning as a separate SSE event — must end with \n\n
+                // so the parser treats it as a distinct event from the content
+                // chunk that follows (otherwise two data: lines get concatenated
+                // into invalid JSON).
+                const rOutput = `data: ${JSON.stringify(reasoningChunk)}\n\n`;
                 reqLogger?.appendConvertedChunk?.(rOutput);
                 controller.enqueue(sharedEncoder.encode(rOutput));
                 delete delta.reasoning_content;

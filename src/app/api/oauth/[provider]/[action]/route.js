@@ -6,7 +6,7 @@ import {
   requestDeviceCode,
   pollForToken
 } from "@/lib/oauth/providers";
-import { createProviderConnection } from "@/models";
+import { createProviderConnection, getProviderConnections } from "@/models";
 import {
   startCodexProxy,
   stopCodexProxy,
@@ -466,7 +466,18 @@ export async function POST(request, { params }) {
         return NextResponse.json({ error: result.error || "SSO login failed" }, { status: 400 });
       }
 
-      const credentials = await readArkcliCredentials(result.arkcliHome);
+      // Preserve any long-lived IAM AK/SK already bound to this SSO account so
+      // that re-authorizing via ark-cli does not wipe them. Match the existing
+      // connection by its isolated arkcli HOME directory.
+      let existingPsd;
+      try {
+        const existing = await getProviderConnections({ provider: "volcengine-sso" });
+        const prev = (existing || []).find(
+          (c) => c.providerSpecificData?.volcArkcliHome === result.arkcliHome
+        );
+        existingPsd = prev?.providerSpecificData;
+      } catch {}
+      const credentials = await readArkcliCredentials(result.arkcliHome, existingPsd);
       if (!credentials) {
         return NextResponse.json({ error: "Login completed but failed to read credentials" }, { status: 500 });
       }
@@ -497,6 +508,10 @@ export async function POST(request, { params }) {
           volcUserName: credentials.volcUserName,
           volcIdentityDir: credentials.volcIdentityDir,
           volcArkcliHome: credentials.volcArkcliHome,
+          // Long-lived IAM AK/SK bound manually (OpenAPI channel) — preserved
+          // across re-authorization.
+          volcIamAk: credentials.volcIamAk,
+          volcIamSk: credentials.volcIamSk,
         },
       });
 

@@ -89,3 +89,5 @@ graphify-out/*
 
 # Kiro local workspace state
 .kiro/
+docker-compose-local.yml
+Dockerfile.local
