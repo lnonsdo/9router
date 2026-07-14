@@ -22,6 +22,8 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
     organization: "",
   });
   const [cloudflareData, setCloudflareData] = useState({ accountId: "" });
+  // Volcengine SSO: long-lived IAM AK/SK binding (removes 2-day re-auth pain)
+  const [volcIamData, setVolcIamData] = useState({ volcIamAk: "", volcIamSk: "" });
   const [region, setRegion] = useState("");
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
@@ -47,6 +49,13 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
       }
       if (connection.provider === "cloudflare-ai" && connection.providerSpecificData) {
         setCloudflareData({ accountId: connection.providerSpecificData.accountId || "" });
+      }
+      // Load existing IAM AK/SK binding for Volcengine SSO connections
+      if (connection.provider === "volcengine-sso" && connection.providerSpecificData) {
+        setVolcIamData({
+          volcIamAk: connection.providerSpecificData.volcIamAk || "",
+          volcIamSk: connection.providerSpecificData.volcIamSk || "",
+        });
       }
       // Load region for providers that support it (e.g. xiaomi-tokenplan)
       const providerCfg = AI_PROVIDERS?.[connection.provider];
@@ -167,6 +176,16 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
       if (isCloudflareAi) {
         updates.providerSpecificData = { accountId: cloudflareData.accountId };
       }
+      // Volcengine SSO: persist long-lived IAM AK/SK binding
+      if (connection.provider === "volcengine-sso") {
+        const iamAk = volcIamData.volcIamAk.trim();
+        const iamSk = volcIamData.volcIamSk.trim();
+        updates.providerSpecificData = {
+          ...(connection.providerSpecificData || {}),
+          ...(iamAk ? { volcIamAk: iamAk } : {}),
+          ...(iamSk ? { volcIamSk: iamSk } : {}),
+        };
+      }
       // Persist updated region for region-aware providers
       if (providerRegions && region) {
         updates.providerSpecificData = buildRegionSpecificData();
@@ -226,6 +245,36 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
               </Badge>
             )}
           </>
+        )}
+
+        {connection.provider === "volcengine-sso" && (
+          <div className="flex flex-col gap-3 rounded-lg border border-black/10 p-3 dark:border-white/10">
+            <p className="text-xs text-text-muted">
+              绑定火山方舟 IAM 长效 AK/SK，可免去每 2 天重新 SSO 授权的麻烦。在
+              <a href="https://console.volcengine.com/iam/keymanage/" target="_blank" rel="noreferrer" className="text-primary hover:underline">
+                密钥管理
+              </a>
+              获取。
+            </p>
+            <div className="flex gap-2">
+              <Input
+                label="Access Key (AK)"
+                value={volcIamData.volcIamAk}
+                onChange={(e) => setVolcIamData({ ...volcIamData, volcIamAk: e.target.value })}
+                placeholder="AKLT..."
+                className="flex-1"
+              />
+              <Input
+                label="Secret Key (SK)"
+                type="password"
+                value={volcIamData.volcIamSk}
+                onChange={(e) => setVolcIamData({ ...volcIamData, volcIamSk: e.target.value })}
+                placeholder="••••••••"
+                className="flex-1"
+              />
+            </div>
+            <p className="text-[10px] text-text-muted">留空则保留当前已绑定的密钥。</p>
+          </div>
         )}
 
         {isAzure && (
