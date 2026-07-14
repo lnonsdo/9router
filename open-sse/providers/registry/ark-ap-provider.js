@@ -19,7 +19,7 @@ export default {
   category: "apikey",
   transport: {
     baseUrl: "https://ark.cn-beijing.volces.com/api/plan/v3/chat/completions",
-    forceStream: true,
+    forceStream: false,
   },
   models: [
     { id: "ark-code-latest", name: "Ark Code (Latest)" },

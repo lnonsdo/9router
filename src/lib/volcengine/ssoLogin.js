@@ -2,6 +2,7 @@ import { spawn, execFile } from "child_process";
 import { readFile, readdir, mkdir, rename, rm, writeFile } from "fs/promises";
 import { join } from "path";
 import { homedir } from "os";
+import { runArkcliSerialized } from "./arkcliQueue.js";
 
 /**
  * Volcengine SSO Login via arkcli subprocess
@@ -30,6 +31,18 @@ function getIsolatedArkcliEnv(arkcliHome) {
     VOLC_INIT_REGION: "cn-beijing",
     VOLC_INIT_PROJECT_NAME: "default",
   };
+}
+
+/**
+ * Serialized wrapper around execFile("arkcli", ...) to prevent concurrent
+ * arkcli processes from racing on token refresh / file writes.
+ */
+function execArkcli(args, options) {
+  return runArkcliSerialized(() => new Promise((resolve) => {
+    execFile("arkcli", args, options, (err, stdout, stderr) => {
+      resolve({ err, stdout, stderr });
+    });
+  }));
 }
 
 /**
@@ -191,8 +204,13 @@ export async function completeSsoLogin(authCode, arkcliHome) {
 /**
  * Write SSO tokens from identities/<id>/token.json into .arkcli/.env
  * so arkcli can refresh STS after expiry.
+ *
+ * This must be called after every arkcli usage plan / apikey call because
+ * arkcli may rotate the refresh_token during STS refresh and write the new
+ * token only to token.json — the .env copy would otherwise go stale and
+ * eventually cause "无 refresh_token 可用" failures.
  */
-async function syncTokensToEnv(arkcliHome, identitiesDir) {
+export async function syncTokensToEnv(arkcliHome, identitiesDir) {
   let entries;
   try {
     entries = await readdir(identitiesDir, { withFileTypes: true });
@@ -493,7 +511,7 @@ async function readIdentityAccountId(identitiesDir) {
  * @param {string} arkcliHome - The isolated HOME directory for this account
  * @returns {Promise<object|null>} Credentials object or null if not found
  */
-export async function readArkcliCredentials(arkcliHome) {
+export async function readArkcliCredentials(arkcliHome, existingPsd) {
   const arkcliDir = join(arkcliHome, ".arkcli");
   const identitiesDir = join(arkcliDir, "identities");
 
@@ -559,6 +577,11 @@ export async function readArkcliCredentials(arkcliHome) {
 
       // The isolated arkcli HOME directory for this account
       volcArkcliHome: arkcliHome,
+
+      // Preserve any long-lived IAM AK/SK the user bound manually (OpenAPI
+      // channel). Re-authorizing via ark-cli would otherwise overwrite them.
+      volcIamAk: existingPsd?.volcIamAk,
+      volcIamSk: existingPsd?.volcIamSk,
     };
   } catch (e) {
     throw new Error(`Failed to read arkcli credentials: ${e.message}`);
@@ -630,29 +653,27 @@ export async function listArkcliApiKeys(arkcliHome) {
   } catch {}
 
   // Source 2: apikey.list + get_raw (platform / 控制台按量)
-  const listResult = await new Promise((resolve) => {
-    execFile(
-      "arkcli",
+  let listResult;
+  {
+    const { err, stdout, stderr } = await execArkcli(
       ["api", "apikey.list", "--params", '{"PageSize":100}', "--format", "json"],
-      { timeout: 30000, env, maxBuffer: 1024 * 1024 },
-      (err, stdout, stderr) => {
-        if (err) {
-          resolve({ error: `${err.message}${stderr ? ` (${stderr.slice(0, 200)})` : ""}` });
-          return;
-        }
-        try {
-          const data = JSON.parse(stdout);
-          if (data?.ok === false) {
-            resolve({ error: data?.error?.message || "apikey.list failed" });
-            return;
-          }
-          resolve({ items: data?.Result?.Items || [] });
-        } catch {
-          resolve({ error: `apikey.list returned non-JSON: ${stdout.slice(0, 200)}` });
-        }
-      }
+      { timeout: 30000, env, maxBuffer: 1024 * 1024 }
     );
-  });
+    if (err) {
+      listResult = { error: `${err.message}${stderr ? ` (${stderr.slice(0, 200)})` : ""}` };
+    } else {
+      try {
+        const data = JSON.parse(stdout);
+        if (data?.ok === false) {
+          listResult = { error: data?.error?.message || "apikey.list failed" };
+        } else {
+          listResult = { items: data?.Result?.Items || [] };
+        }
+      } catch {
+        listResult = { error: `apikey.list returned non-JSON: ${stdout.slice(0, 200)}` };
+      }
+    }
+  }
 
   if (listResult.error && keys.length === 0) {
     return { keys: [], error: listResult.error };
@@ -664,21 +685,19 @@ export async function listArkcliApiKeys(arkcliHome) {
       const name = item.Name || item.name || "API Key";
       const status = item.Status || item.status || "active";
 
-      const rawKey = await new Promise((resolve) => {
-        execFile(
-          "arkcli",
-          ["api", "apikey.get_raw", "--params", JSON.stringify({ Id: id }), "--format", "json"],
-          { timeout: 15000, env, maxBuffer: 1024 * 1024 },
-          (err, stdout) => {
-            if (err) { resolve(""); return; }
-            try {
-              const data = JSON.parse(stdout);
-              if (data?.ok === false) { resolve(""); return; }
-              resolve(data?.Result?.ApiKey || data?.Result?.Key || "");
-            } catch { resolve(""); }
+      const { err: rawErr, stdout: rawStdout } = await execArkcli(
+        ["api", "apikey.get_raw", "--params", JSON.stringify({ Id: id }), "--format", "json"],
+        { timeout: 15000, env, maxBuffer: 1024 * 1024 }
+      );
+      let rawKey = "";
+      if (!rawErr) {
+        try {
+          const data = JSON.parse(rawStdout);
+          if (data?.ok !== false) {
+            rawKey = data?.Result?.ApiKey || data?.Result?.Key || "";
           }
-        );
-      });
+        } catch {}
+      }
 
       if (rawKey && !seenKeys.has(rawKey)) {
         seenKeys.add(rawKey);
@@ -686,6 +705,10 @@ export async function listArkcliApiKeys(arkcliHome) {
       }
     }
   }
+
+  // Sync latest refresh_token from token.json to .env (arkcli may have
+  // rotated it during STS refresh inside apikey.list/get_raw calls).
+  await syncTokensToEnv(arkcliHome, join(arkcliHome, ".arkcli", "identities")).catch(() => {});
 
   return { keys, error: null };
 }
