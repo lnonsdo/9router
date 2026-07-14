@@ -23,6 +23,7 @@ import {
   getQoderUsage,
 } from "./usage/misc.js";
 import { getVolcengineArkUsage } from "./usage/volcengine-ark.js";
+import { getVolcengineArkOpenApiUsage } from "./usage/volcengine-ark-openapi.js";
 
 /**
  * Get usage data for a provider connection

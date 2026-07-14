@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import QuotaTable from "./QuotaTable";
+import ArkOpenApiPanel from "./ArkOpenApiPanel";
 import Toggle from "@/shared/components/Toggle";
 import Tooltip from "@/shared/components/Tooltip";
 import {
@@ -1262,15 +1263,22 @@ export default function ProviderLimits() {
                     <p className="text-xs text-text-muted">{quota.message}</p>
                   </div>
                 ) : (
-                  <QuotaTable
-                    quotas={visibleQuotas}
-                    compact
-                    sortMode="default"
-                    showSortLabel={
-                      conn.provider === "codex" && quotaSortMode !== "default"
-                    }
-                    onHideQuota={(quotaRow) => handleHideQuota(conn.provider, quotaRow)}
-                  />
+                  <div>
+                    {quota?.raw?.warning && (
+                      <div className="mb-2 rounded-md bg-amber-50 dark:bg-amber-950/30 px-2.5 py-1.5 border border-amber-200 dark:border-amber-800">
+                        <p className="text-xs text-amber-700 dark:text-amber-400">{quota.raw.warning}</p>
+                      </div>
+                    )}
+                    <QuotaTable
+                      quotas={visibleQuotas}
+                      compact
+                      sortMode="default"
+                      showSortLabel={
+                        conn.provider === "codex" && quotaSortMode !== "default"
+                      }
+                      onHideQuota={(quotaRow) => handleHideQuota(conn.provider, quotaRow)}
+                    />
+                  </div>
                 )}
                 {hiddenQuotaRows.length > 0 && (
                   <div className="mt-2 flex min-w-0 items-center gap-1 border-t border-black/5 pt-2 text-[10px] text-text-muted dark:border-white/5">
@@ -1293,6 +1301,10 @@ export default function ProviderLimits() {
                     </div>
                   </div>
                 )}
+
+                {/* Volcengine SSO: bind long-lived IAM AK/SK + show plan/billing */}
+                {conn.provider === "volcengine-sso" && <ArkOpenApiPanel connection={conn} />}
+
               </div>
             </Card>
           );
