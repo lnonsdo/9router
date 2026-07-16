@@ -92,6 +92,7 @@ function buildPlanEntry(plan, detail) {
     remaining: daysLeft,
     remainingPercentage: pct,
     unlimited: false,
+    resetAt: end,
     meta: {
       status: detail.Status,
       startTime: detail.StartTime,
@@ -148,11 +149,11 @@ async function fetchPlanUsage(ak, sk, plan) {
 }
 
 const TIER_LABELS = {
-  session: "会话",
-  weekly: "本周",
-  monthly: "本月",
-  fivehour: "5 小时",
-  daily: "今日",
+  session: "session",
+  weekly: "weekly",
+  monthly: "monthly",
+  fivehour: "5H",
+  daily: "day",
 };
 
 /**
@@ -168,12 +169,13 @@ function buildTierEntriesFromQuotaUsage(usage) {
       ? new Date(tier.ResetTimestamp * 1000).toISOString()
       : null;
     return {
-      name: `Coding Plan · ${TIER_LABELS[level] || level}`,
+      name: `Coding (${TIER_LABELS[level] || level})`,
       used: percent,
       total: 100,
       remaining,
       remainingPercentage: remaining,
       unlimited: false,
+      resetAt,
       meta: { tier: level, resetAt, isTier: true },
     };
   });
@@ -192,6 +194,8 @@ function buildTierEntriesFromAfp(result) {
     ["AFPMonthly", "monthly"],
   ];
   const out = [];
+  const planType = result.PlanType || "unknown";
+
   for (const [key, level] of map) {
     const t = result[key];
     if (!t || !Number(t.Quota)) continue;
@@ -203,12 +207,13 @@ function buildTierEntriesFromAfp(result) {
       ? new Date(t.ResetTime).toISOString()
       : null;
     out.push({
-      name: `Agent Plan · ${TIER_LABELS[level] || level}`,
+      name: `AFP ${planType} (${TIER_LABELS[level] || level})`,
       used: Math.round(used * 100) / 100,
       total: quota,
       remaining,
       remainingPercentage: Math.max(0, Math.round((remaining / quota) * 10000) / 100),
       unlimited: false,
+      resetAt,
       meta: { tier: level, resetAt, isTier: true, isAfp: true, percent },
     });
   }

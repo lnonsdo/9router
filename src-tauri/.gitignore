@@ -1,0 +1,16 @@
+# Rust build artifacts
+/target/
+
+# Tauri generated schemas
+/gen/schemas/
+
+# Tauri may emit transient node resolution artifacts in this dir during build
+/.pnpm/
+/better-sqlite3
+
+# macOS / Windows / Linux build output
+*.app
+*.dmg
+*.msi
+*.deb
+*.AppImage

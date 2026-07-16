@@ -1,0 +1,35 @@
+# Tauri desktop shell for 9Router.
+# INCREMENTAL ADDITION - does not modify any upstream file. The Rust side
+# spawns the existing Next.js standalone server (`node app/custom-server.js`)
+# and renders its Dashboard in a native WebView. All existing cli/ + src/
+# code stays untouched, so `git pull` from upstream never conflicts here.
+# NOTE: Cargo package names must not start with a digit, so the crate is
+# `nine-router-desktop` while the user-facing productName stays "9Router".
+[package]
+name = "nine-router-desktop"
+version = "0.5.30"
+description = "9Router desktop app (Tauri shell)"
+authors = ["9Router contributors"]
+edition = "2021"
+
+# The desktop shell version tracks the 9Router app version in package.json.
+# Bump together when pulling a new upstream release, then re-run tauri:build.
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-window-state = "2"
+tauri-plugin-shell = "2"
+serde_json = "1"
+
+[target."cfg(target_os = \"macos\")".dependencies]
+objc = "0.2"
+
+[profile.release]
+panic = "abort"      # 发生 panic 时直接中止，省去异常堆栈回溯的体积
+codegen-units = 1    # 限制编译单元数量为 1，让 LLVM 能够进行更彻底的全局优化
+lto = true           # 开启全局链接时优化 (Link-Time Optimization)
+opt-level = "s"      # 针对二进制体积进行优化（如果追求极致性能，可设为 3）
+strip = true         # 自动移除编译产物中的调试符号和符号表
