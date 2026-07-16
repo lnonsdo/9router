@@ -41,9 +41,11 @@ export async function GET(request) {
       );
     }
 
-    const month = searchParams.get("month") || "";
+
+    // const month = searchParams.get("month") || "";
     // Volcengine billing uses "BillPeriod" (YYYY-MM) as the required param.
-    const payload = month ? { BillPeriod: month } : {};
+    const month = searchParams.get("month") || new Date().toISOString().substring(0, 7);
+    const payload = { BillPeriod: month, Limit: 10, Product: ['ark'] };
 
     let data;
     try {
@@ -52,12 +54,10 @@ export async function GET(request) {
         sk,
         action: "ListBill",
         version: "2022-01-01",
-        ...payload,
+        payload,
         baseUrl: "https://billing.volcengineapi.com",
         service: "billing",
         region: "cn-beijing",
-        Limit: 10,
-        Product: ['ark']
       });
     } catch (err) {
       // AccessDenied => AK/SK lacks billing:ListBill; guide the user to grant it.

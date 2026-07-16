@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { usePathname } from "next/navigation";
 import { useNotificationStore } from "@/store/notificationStore";
 import Sidebar from "../Sidebar";
 import Header from "../Header";
+import CloseConfirmModal, { getRememberedCloseAction } from "../CloseConfirmModal";
 
 function getToastStyle(type) {
   if (type === "success") {
@@ -33,9 +34,56 @@ function getToastStyle(type) {
 
 export default function DashboardLayout({ children }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [closeOpen, setCloseOpen] = useState(false);
   const pathname = usePathname();
   const notifications = useNotificationStore((state) => state.notifications);
   const removeNotification = useNotificationStore((state) => state.removeNotification);
+
+  // Tauri desktop shell: intercept the window close (red) button.
+  // The Rust side prevent_default()s the close and emits "close-requested";
+  // here we show the Quit / Minimize-to-tray dialog instead.
+  useEffect(() => {
+    let unlisten;
+    (async () => {
+      try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        const { listen, emit } = await import("@tauri-apps/api/event");
+        const win = getCurrentWindow();
+        unlisten = await listen("close-requested", async () => {
+          const remembered = getRememberedCloseAction();
+          if (remembered === "quit") {
+            await win.destroy();
+          } else if (remembered === "background") {
+            // Emit "hide-to-tray" so Rust hides both window + Dock icon.
+            // Can't use win.hide() directly because it doesn't hide Dock.
+            // Can't use invoke("hide_to_tray") because custom commands are
+            // blocked by ACL on remote URLs. Events work fine.
+            await emit("hide-to-tray");
+          } else {
+            setCloseOpen(true);
+          }
+        });
+      } catch {
+        /* not in Tauri - browser keeps default close behavior */
+      }
+    })();
+    return () => { if (unlisten) unlisten(); };
+  }, []);
+
+  const handleCloseConfirm = async (action) => {
+    setCloseOpen(false);
+    try {
+      if (action === "quit") {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        await getCurrentWindow().destroy();
+      } else {
+        const { emit } = await import("@tauri-apps/api/event");
+        await emit("hide-to-tray");
+      }
+    } catch {
+      /* not in Tauri */
+    }
+  };
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-bg">
@@ -99,6 +147,13 @@ export default function DashboardLayout({ children }) {
           <div className={`${pathname === "/dashboard/basic-chat" ? "flex-1 w-full h-full flex flex-col" : "max-w-7xl mx-auto"}`}>{children}</div>
         </div>
       </main>
+
+      {/* Close confirmation (Tauri desktop shell only) */}
+      <CloseConfirmModal
+        isOpen={closeOpen}
+        onClose={() => setCloseOpen(false)}
+        onConfirm={handleCloseConfirm}
+      />
     </div>
   );
 }
