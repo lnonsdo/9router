@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>9Router</title>
+    <!--
+      Build-mode placeholder. Tauri v2 loads THIS file (file://) on launch; the
+      Rust side owns the spawned Next server and navigates the webview to
+      http://127.0.0.1:20129/dashboard once the port is up. We intentionally do
+      NOT navigate from here: a file:// page cannot fetch()/location.replace()/
+      navigate() to an http:// origin (same-origin / opaque-origin policy), so
+      any JS-driven jump would silently fail and leave this screen showing.
+    -->
+    <style>
+      html, body { margin: 0; height: 100%; background: #0a0a0a; color: #fff;
+        font-family: -apple-system, system-ui, sans-serif; display: flex;
+        align-items: center; justify-content: center; }
+      .wrap { text-align: center; }
+      .logo { font-size: 42px; font-weight: 800; letter-spacing: -1px; }
+      .sub { margin-top: 8px; opacity: 0.6; font-size: 14px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="logo">9R</div>
+      <div class="sub">Starting local 9Router server…</div>
+    </div>
+  </body>
+</html>
