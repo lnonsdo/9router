@@ -33,7 +33,7 @@ export async function createDashboardAuthToken(claims = {}) {
   return new SignJWT({ authenticated: true, ...claims })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
-    .setExpirationTime("24h")
+    .setExpirationTime("30d")
     .sign(SECRET);
 }
 
@@ -64,6 +64,7 @@ export async function setDashboardAuthCookie(cookieStore, request, claims = {}) 
     secure: shouldUseSecureCookie(request),
     sameSite: "lax",
     path: "/",
+    maxAge: 60 * 60 * 24 * 30, // 30 days - persistent cookie survives app restarts
   });
 }
 

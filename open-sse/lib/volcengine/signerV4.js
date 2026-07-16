@@ -205,7 +205,7 @@ export async function callArkOpenApi(opts) {
     sk,
     action,
     version = "2024-01-01",
-    payload = {},
+    payload,
     baseUrl = "https://ark.cn-beijing.volcengineapi.com",
     service = "ark",
     region = "cn-beijing",
