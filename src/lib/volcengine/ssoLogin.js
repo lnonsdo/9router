@@ -402,19 +402,52 @@ function createProfileNonInteractive(arkcliPath, arkcliHome) {
           return;
         }
 
-        // No profiles -- try agent-plan first (auto-binds API Key), then platform
-        spawnProfileCreate(arkcliPath, arkcliHome, "agent-plan")
-          .then((agentResult) => {
-            // Also create platform profile for usage queries (don't set as default)
+        // No profiles -- create every profile type the account is subscribed to.
+        // An account may have both agent-plan AND coding-plan; create both.
+        // First successful plan profile becomes the default; platform is always
+        // added (for quota/usage queries) but never default.
+        const planTypes = ["agent-plan", "coding-plan"];
+        let createdDefault = false;
+        let anyCreated = false;
+
+        const tryNext = (i) => {
+          if (i >= planTypes.length) {
+            // All plan types attempted. Add platform profile for usage queries.
             return spawnProfileCreate(arkcliPath, arkcliHome, "platform", false)
               .catch(() => null)
-              .then(() => agentResult);
-          })
-          .then(resolve)
-          .catch(() => {
-            // agent-plan failed (e.g. no subscription) -- fall back to platform only
-            spawnProfileCreate(arkcliPath, arkcliHome, "platform").then(resolve);
-          });
+              .then(() => {
+                if (!anyCreated) {
+                  // No plan profile succeeded -- platform is the only option
+                  return spawnProfileCreate(arkcliPath, arkcliHome, "platform", true);
+                }
+                return { success: true };
+              })
+              .then((r) => {
+                if (anyCreated || (r && r.success)) {
+                  resolve({ success: true });
+                } else {
+                  resolve({
+                    success: false,
+                    error: "无法为此账户创建任何 profile（agent-plan / coding-plan / platform 均失败）",
+                  });
+                }
+              });
+          }
+
+          const type = planTypes[i];
+          return spawnProfileCreate(arkcliPath, arkcliHome, type, !createdDefault)
+            .then((result) => {
+              if (result.success) {
+                if (!createdDefault) createdDefault = true;
+                anyCreated = true;
+              }
+              // Continue to the next plan type regardless (account may have both)
+              return tryNext(i + 1);
+            })
+            .catch(() => tryNext(i + 1));
+        };
+
+        tryNext(0);
       }
     );
   });
