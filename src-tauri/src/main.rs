@@ -48,9 +48,10 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 
 use tauri::{
-    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
+    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu, CheckMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Listener, Manager, Emitter,
+    WebviewWindowBuilder,
 };
 
 const SERVER_PORT: &str = "20129";
@@ -128,6 +129,9 @@ fn boot_log(line: &str) {
 /// Tracks the server child we spawned (release mode only). In dev mode the
 /// server is owned by `beforeDevCommand`, so this stays None and we never kill it.
 struct ServerChild(Mutex<Option<Child>>);
+
+/// Tracks lightweight mode state (shared between tray menu and event handlers).
+struct LightweightMode(std::sync::atomic::AtomicBool);
 
 /// Resolve the node binary, nvm-aware (see header note). Returns a path/name
 /// suitable for Command::new.
@@ -332,8 +336,9 @@ fn stop_server(app: &AppHandle) {
 /// Build a Tauri-native tray menu (replaces upstream systray2 tray.js).
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let show_item = MenuItem::with_id(app, "show", "Open Dashboard", true, None::<&str>)?;
+    let lightweight_item = CheckMenuItem::with_id(app, "lightweight", "Lightweight Mode", true, false, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit 9Router", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+    let menu = Menu::with_items(app, &[&show_item, &lightweight_item, &quit_item])?;
 
     let _tray = TrayIconBuilder::with_id("9router-tray")
         .tooltip("9Router")
@@ -344,11 +349,22 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         }))
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => {
-                #[cfg(target_os = "macos")]
-                set_dock_visible(true);
-                if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.show();
-                    let _ = win.set_focus();
+                show_dashboard(app);
+            }
+            "lightweight" => {
+                // The check item toggles automatically. Read its state to
+                // determine the action.
+                if let Some(state) = app.try_state::<LightweightMode>() {
+                    let now_on = state.0.fetch_xor(true, std::sync::atomic::Ordering::Relaxed) ^ true;
+                    if now_on {
+                        boot_log("lightweight mode: ON - closing window + hiding Dock");
+                        #[cfg(target_os = "macos")]
+                        set_dock_visible(false);
+                        close_window_for_lightweight(app);
+                    } else {
+                        boot_log("lightweight mode: OFF - recreating window");
+                        show_dashboard(app);
+                    }
                 }
             }
             "quit" => {
@@ -364,12 +380,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 ..
             } = event
             {
-                #[cfg(target_os = "macos")]
-                set_dock_visible(true);
-                if let Some(win) = tray.app_handle().get_webview_window("main") {
-                    let _ = win.show();
-                    let _ = win.set_focus();
-                }
+                show_dashboard(tray.app_handle());
             }
         })
         .build(app)?;
@@ -436,6 +447,59 @@ fn set_dock_visible(visible: bool) {
     }
 }
 
+/// URL of the dashboard, used when (re)creating the window.
+const DASHBOARD_URL: &str = "http://127.0.0.1:20129/dashboard";
+
+/// (Re)create the main webview window if it doesn't exist, then navigate
+/// to the dashboard. Used by "Open Dashboard" when the window was destroyed
+/// in lightweight mode.
+fn show_dashboard(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    set_dock_visible(true);
+
+    if app.get_webview_window("main").is_none() {
+        boot_log("show_dashboard: creating new window (was destroyed)");
+        let _ = WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
+            .title("9Router")
+            .inner_size(1280.0, 800.0)
+            .min_inner_size(900.0, 600.0)
+            .resizable(true)
+            .center()
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true)
+            .decorations(true)
+            .transparent(true)
+            .build();
+        // After creating, wait for server and navigate + inject JS.
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            if std::net::TcpStream::connect("127.0.0.1:20129").is_ok() {
+                if let Some(w) = app2.get_webview_window("main") {
+                    let _ = w.navigate(DASHBOARD_URL.parse().unwrap());
+                    std::thread::sleep(std::time::Duration::from_millis(2000));
+                    let _ = w.eval(PAGE_INIT_JS);
+                }
+            }
+        });
+    } else if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+}
+
+/// Close the main window to free WebView memory. The server keeps running.
+/// We use close() (not destroy()) and set a flag so on_window_event lets it
+/// through without showing the close dialog.
+fn close_window_for_lightweight(app: &AppHandle) {
+    boot_log("close_window_for_lightweight: closing window to free memory");
+    if let Some(win) = app.get_webview_window("main") {
+        // close() triggers CloseRequested, but on_window_event checks
+        // LightweightMode flag and lets it through.
+        let _ = win.close();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 fn main() {
     tauri::Builder::default()
@@ -462,28 +526,8 @@ fn main() {
                 .build()
         )
         .setup(|app| {
-            // 2. 针对 macOS：安全隐藏红绿灯，保留原生圆角和阴影
-            // #[cfg(target_os = "macos")]
-            // {
-            //     use objc::{msg_send, sel, sel_impl};
-            //     if let Some(window) = app.get_webview_window("main") {
-            //         if let Ok(ns_window) = window.ns_window() {
-            //             let ns_window = ns_window as *mut objc::runtime::Object;
-            //             if !ns_window.is_null() {
-            //                 unsafe {
-            //                     for i in 0..=2 {
-            //                         // macOS 的 NSWindowButton 实际上是 NSUInteger (对应 Rust 的 usize)
-            //                         let button: *mut objc::runtime::Object = msg_send![ns_window, standardWindowButton: i as usize];
-            //                         if !button.is_null() {
-            //                             let _: () = msg_send![button, setHidden: true];
-            //                         }
-            //                     }
-            //                 }
-            //             }
-            //         }
-            //     }
-            // }
             let handle = app.handle();
+            app.manage(LightweightMode(std::sync::atomic::AtomicBool::new(false)));
 
             // In release/build mode we own the server (spawn + kill). In dev mode
             // `beforeDevCommand` already started it, so skip to avoid a port clash.
@@ -606,10 +650,13 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Intercept the user clicking the close (red) button. Instead of
-            // closing, emit "close-requested" so the frontend shows the
-            // Quit / Minimize-to-tray dialog.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // In lightweight mode, let the window close to free memory.
+                if let Some(state) = window.app_handle().try_state::<LightweightMode>() {
+                    if state.0.load(std::sync::atomic::Ordering::Relaxed) {
+                        return; // allow close
+                    }
+                }
                 api.prevent_close();
                 let _ = window.emit("close-requested", ());
             }
@@ -641,11 +688,18 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while running 9Router desktop")
         .run(|app, event| {
-            if let tauri::RunEvent::ExitRequested { .. } = event {
-                stop_server(app);
-            }
-            if let tauri::RunEvent::Exit = event {
-                stop_server(app);
+            match event {
+                tauri::RunEvent::ExitRequested { api, .. } => {
+                    // Prevent exit when window is closed in lightweight mode.
+                    // The app stays alive with just the tray icon.
+                    if app.get_webview_window("main").is_none() {
+                        api.prevent_exit();
+                    }
+                }
+                tauri::RunEvent::Exit => {
+                    stop_server(app);
+                }
+                _ => {}
             }
         });
 
