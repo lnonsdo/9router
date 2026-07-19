@@ -133,6 +133,9 @@ struct ServerChild(Mutex<Option<Child>>);
 /// Tracks lightweight mode state (shared between tray menu and event handlers).
 struct LightweightMode(std::sync::atomic::AtomicBool);
 
+/// Stores the check menu item so we can update its checked state.
+struct LightweightMenuItem(std::sync::Mutex<Option<CheckMenuItem<tauri::Wry>>>);
+
 /// Resolve the node binary, nvm-aware (see header note). Returns a path/name
 /// suitable for Command::new.
 fn node_binary() -> String {
@@ -335,10 +338,14 @@ fn stop_server(app: &AppHandle) {
 
 /// Build a Tauri-native tray menu (replaces upstream systray2 tray.js).
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
-    let show_item = MenuItem::with_id(app, "show", "Open Dashboard", true, None::<&str>)?;
+    // All items are CheckMenuItem so macOS reserves the check column for
+    // every row -> text stays aligned whether or not a check is shown.
+    let show_item = CheckMenuItem::with_id(app, "show", "Dashboard", true, false, None::<&str>)?;
     let lightweight_item = CheckMenuItem::with_id(app, "lightweight", "Lightweight Mode", true, false, None::<&str>)?;
-    let quit_item = MenuItem::with_id(app, "quit", "Quit 9Router", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show_item, &lightweight_item, &quit_item])?;
+    let sep1 = PredefinedMenuItem::separator(app)?;
+    let quit_item = CheckMenuItem::with_id(app, "quit", "Quit", true, false, None::<&str>)?;
+    let sep2 = PredefinedMenuItem::separator(app)?;
+    let menu = Menu::with_items(app, &[&show_item, &sep2, &lightweight_item, &sep1, &quit_item])?;
 
     let _tray = TrayIconBuilder::with_id("9router-tray")
         .tooltip("9Router")
@@ -352,17 +359,19 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 show_dashboard(app);
             }
             "lightweight" => {
-                // The check item toggles automatically. Read its state to
-                // determine the action.
                 if let Some(state) = app.try_state::<LightweightMode>() {
-                    let now_on = state.0.fetch_xor(true, std::sync::atomic::Ordering::Relaxed) ^ true;
-                    if now_on {
-                        boot_log("lightweight mode: ON - closing window + hiding Dock");
+                    let was_on = state.0.swap(!state.0.load(std::sync::atomic::Ordering::Relaxed), std::sync::atomic::Ordering::Relaxed);
+                    if !was_on {
+                        // Turned ON: close window + hide Dock
+                        boot_log("lightweight: ON - closing window + hiding Dock");
                         #[cfg(target_os = "macos")]
                         set_dock_visible(false);
-                        close_window_for_lightweight(app);
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.close();
+                        }
                     } else {
-                        boot_log("lightweight mode: OFF - recreating window");
+                        // Turned OFF: recreate window
+                        boot_log("lightweight: OFF - recreating window");
                         show_dashboard(app);
                     }
                 }
@@ -384,6 +393,9 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
             }
         })
         .build(app)?;
+
+    // Store the lightweight check item so show_dashboard can uncheck it.
+    app.manage(LightweightMenuItem(std::sync::Mutex::new(Some(lightweight_item))));
 
     Ok(())
 }
@@ -457,6 +469,19 @@ fn show_dashboard(app: &AppHandle) {
     #[cfg(target_os = "macos")]
     set_dock_visible(true);
 
+    // Clear lightweight mode flag so normal close behavior resumes.
+    if let Some(state) = app.try_state::<LightweightMode>() {
+        state.0.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+    // Uncheck the lightweight menu item.
+    if let Some(state) = app.try_state::<LightweightMenuItem>() {
+        if let Ok(guard) = state.0.lock() {
+            if let Some(check) = guard.as_ref() {
+                let _ = check.set_checked(false);
+            }
+        }
+    }
+
     if app.get_webview_window("main").is_none() {
         boot_log("show_dashboard: creating new window (was destroyed)");
         let _ = WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
@@ -488,14 +513,11 @@ fn show_dashboard(app: &AppHandle) {
     }
 }
 
-/// Close the main window to free WebView memory. The server keeps running.
-/// We use close() (not destroy()) and set a flag so on_window_event lets it
-/// through without showing the close dialog.
+/// Destroy the main window to free WebView memory. The server keeps running.
+/// Called by "Enter Lightweight Mode" tray menu item.
 fn close_window_for_lightweight(app: &AppHandle) {
     boot_log("close_window_for_lightweight: closing window to free memory");
     if let Some(win) = app.get_webview_window("main") {
-        // close() triggers CloseRequested, but on_window_event checks
-        // LightweightMode flag and lets it through.
         let _ = win.close();
     }
 }
