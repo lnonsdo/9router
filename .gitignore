@@ -92,3 +92,7 @@ graphify-out/*
 
 docker-compose-local.yml
 Dockerfile.local
+
+# Rust/Tauri build artifacts (root-level so IDE indexers skip them)
+/src-tauri/target/
+/src-tauri/gen/schemas/
