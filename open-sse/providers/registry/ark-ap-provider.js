@@ -23,6 +23,7 @@ export default {
   },
   models: [
     { id: "ark-code-latest", name: "Ark Code (Latest)" },
+    { id: "doubao-seed-evolving", name: "Doubao Seed Evolving" },
     { id: "doubao-seed-2.0-code", name: "Doubao Seed 2.0 Code" },
     { id: "doubao-seed-2.0-pro", name: "Doubao Seed 2.0 Pro" },
     { id: "doubao-seed-2.0-lite", name: "Doubao Seed 2.0 Lite" },
