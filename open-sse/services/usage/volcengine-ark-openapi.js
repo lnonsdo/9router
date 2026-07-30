@@ -153,7 +153,7 @@ const TIER_LABELS = {
   weekly: "weekly",
   monthly: "monthly",
   fivehour: "5H",
-  daily: "day",
+  // daily: "day",
 };
 
 /**
