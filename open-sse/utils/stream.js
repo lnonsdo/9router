@@ -212,11 +212,16 @@ export function createSSEStream(options = {}) {
                 }
               }
 
-              // OpenAI include_usage: final chunk has choices:[] with valid usage - forward it
+              // OpenAI include_usage: final chunk has choices:[] with valid usage - forward it.
+              // Overwrite (don't mergeUsage) here: this frame carries the COMPLETE final usage
+              // from the provider. Earlier finish chunks may have triggered estimateUsage and
+              // set `usage` to an estimated (often larger) value; mergeUsage's Math.max would then
+              // keep the bogus estimate and suppress the real count. Direct assignment lets the
+              // authoritative provider value win.
               if (Array.isArray(parsed.choices) && parsed.choices.length === 0) {
                 if (hasValidUsage(parsed.usage)) {
                   const extracted = extractUsage(parsed);
-                  if (extracted) usage = mergeUsage(usage, extracted);
+                  if (extracted) usage = extracted;
                   const output = `data: ${JSON.stringify(parsed)}\n`;
                   reqLogger?.appendConvertedChunk?.(output);
                   controller.enqueue(sharedEncoder.encode(output));

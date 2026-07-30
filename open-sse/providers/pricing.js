@@ -133,6 +133,12 @@ export const MODEL_PRICING = {
   "gpt-oss-120b-medium":          { input: 0.50,  output: 2.00,  cached: 0.25,  reasoning: 3.00,   cache_creation: 0.50  },
   "vision-model":                 { input: 1.50,  output: 6.00,  cached: 0.75,  reasoning: 9.00,   cache_creation: 1.50  },
   "coder-model":                  { input: 1.50,  output: 6.00,  cached: 0.75,  reasoning: 9.00,   cache_creation: 1.50  },
+
+  // === Volcengine Ark ===
+  "ark-code-latest":              { input: 0.9,  output: 4.50,  cached: 0.18,  reasoning: 0.00,  cache_creation: 0.00  },
+  "doubao-seed-evolving":        { input: 0.9,  output: 4.50,  cached: 0.18,  reasoning: 0.00,  cache_creation: 0.00  },
+  "doubao-seed-2.1-pro":        { input: 0.9,  output: 4.50,  cached: 0.18,  reasoning: 0.00,  cache_creation: 0.00  },
+  "doubao-seed-2.1-turbo":        { input: 0.45,  output: 2.25,  cached: 0.09,  reasoning: 0.00,  cache_creation: 0.00  },
 };
 
 /**

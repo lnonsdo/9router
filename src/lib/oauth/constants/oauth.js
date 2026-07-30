@@ -125,8 +125,10 @@ export const KIMCHI_CONFIG = { ...PROVIDER_OAUTH["kimchi"] };
 export const GROK_CLI_CONFIG = { ...PROVIDER_OAUTH["grok-cli"] };
 // Volcengine SSO Configuration (arkcli subprocess device_code-like flow)
 // No registry oauth block - flow is handled entirely via arkcli subprocess.
+// Uses upstream "device_code" flowType so generateAuthData/requestDeviceCode/
+// pollForToken all route correctly (no buildAuthUrl needed).
 export const VOLCENGINE_SSO_CONFIG = {
-  flowType: "volcengine_sso",
+  flowType: "device_code",
 };
 
 // Trae (ByteDance marscode) OAuth — authorization_code flow with local callback.
@@ -229,10 +231,4 @@ export const PROVIDERS = {
   WINDSURF: "windsurf",
   ZED: "zed",
   VOLCENGINE_SSO: "volcengine-sso",
-};
-
-// Volcengine SSO Configuration (arkcli subprocess device_code-like flow)
-// No registry oauth block - flow is handled entirely via arkcli subprocess.
-export const VOLCENGINE_SSO_CONFIG = {
-  flowType: "volcengine_sso",
 };

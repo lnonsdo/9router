@@ -4,9 +4,11 @@ import { VOLCENGINE_SSO_CONFIG } from "../constants/oauth.js";
 // Flow: Phase 1 (start) -> arkcli outputs SSO URL -> user logs in browser
 //       Phase 2 (complete) -> user pastes auth code -> arkcli completes login
 //       Post: read STS credentials from ~/.arkcli/identities/
+// flowType is "device_code" (set in VOLCENGINE_SSO_CONFIG) so it routes through
+// upstream's device-code helpers without needing a buildAuthUrl.
 const volcengineSso = {
   config: VOLCENGINE_SSO_CONFIG,
-  flowType: "volcengine_sso",
+  flowType: "device_code",
 
   // Phase 1: Start arkcli --no-browser, extract SSO URL
   // Returns a fake "device code" object with the SSO URL as verification_uri
