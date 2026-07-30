@@ -102,11 +102,17 @@ function getCacheCreationTokens(tokens) {
 
 function getInputTokens(tokens) {
   const prompt = tokens?.prompt_tokens || tokens?.input_tokens || 0;
-  // Canonical storage keeps prompt cache-inclusive. Legacy Claude rows may have
-  // stored prompt cache-exclusive; fall back to cache when it's larger so old
-  // rows don't under-report input.
   const cache = getCachedTokens(tokens);
-  return prompt < cache ? cache : prompt;
+  // Native Claude format stores prompt cache-exclusive with cache in a separate
+  // `cache_read_input_tokens` field — input = prompt + cache_read there.
+  // Only fall back to cache when it's LARGER for canonical/legacy rows where
+  // prompt_tokens is already cache-inclusive (cached_tokens is a subset) but an
+  // old Claude row stored it cache-exclusive. Guard on the absence of the native
+  // Claude field so we never mistake a cache-exclusive prompt for under-reporting.
+  if (tokens?.cache_read_input_tokens === undefined && prompt < cache) {
+    return cache;
+  }
+  return prompt;
 }
 
 export default function RequestDetailsTab() {

@@ -188,7 +188,7 @@ export async function GET(request, { params }) {
 
     if (action === "device-code") {
       const providerData = getProvider(provider);
-      if (providerData.flowType !== "device_code" && providerData.flowType !== "volcengine_sso") {
+      if (providerData.flowType !== "device_code") {
         return NextResponse.json({ error: "Provider does not support device code flow" }, { status: 400 });
       }
 

@@ -51,6 +51,7 @@ export default {
     { id: "glm-5v-turbo", name: "GLM-5v-Turbo" },
     { id: "minimax-m3", name: "MiniMax-M3" },
     { id: "minimax-m2.7", name: "MiniMax-M2.7" },
+    { id: "kimi-k3", name: "Kimi-K3" },
     { id: "kimi-k2.7", name: "Kimi-K2.7-Code" },
     { id: "kimi-k2.6", name: "Kimi-K2.6" },
     { id: "kimi-k2.5", name: "Kimi-K2.5" },
