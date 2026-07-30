@@ -214,6 +214,11 @@ export const MODEL_CAPABILITIES = {
   "north-mini-code-free":    { reasoning: true, thinkingFormat: "openai", contextWindow: 256000, maxOutput: 64000 },
   "ring-2.6-1t-free":        { reasoning: true, thinkingFormat: "openai", contextWindow: 262000, maxOutput: 66000 },
   "x-preview-f-free":        { vision: true, videoInput: true, reasoning: true, thinkingFormat: "openai", contextWindow: 1000000, maxOutput: 131072 },
+  // Volcengine Ark (Agent/Coding Plan) — global (provider-agnostic) entries so
+  // they resolve regardless of provider arg. thinkingFormat omitted: Ark is
+  // dual openai/anthropic, resolveFormat derives it per target protocol.
+  "ark-code-latest":        { vision: true, reasoning: true, contextWindow: 256000, maxOutput: 128000 },
+  "doubao-seed-evolving":   { vision: true, reasoning: true, contextWindow: 1048576, maxOutput: 256000 },
 };
 
 const KIRO_GPT_5_6_CAPABILITIES = { vision: true, reasoning: true, search: true, thinkingFormat: "openai", contextWindow: 272000, maxOutput: 128000 };
@@ -338,6 +343,10 @@ export const PROVIDER_CAPABILITIES = {
     // table (the old 38000 had no source and truncated output).
     "glm-4.7":            { reasoning: true, thinkingFormat: "openai", contextWindow: 200000, maxOutput: 48000 },
     "minimax-m3":         { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 512000, maxOutput: 524288 },
+    "minimax-m2.7":       { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 200000, maxOutput: 48000 },
+    "kimi-k3":            { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 50000 },
+    "kimi-k2.7":          { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 256000, maxOutput: 32000 },
+    "kimi-k2.6":          { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 256000, maxOutput: 32000 },
     "kimi-k2.5":          { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 164000, maxOutput: 32000 },
     "hy3-preview":        { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 192000, maxOutput: 64000 },
     "deepseek-v4-flash":  { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 50000 },
@@ -404,6 +413,50 @@ export const PROVIDER_CAPABILITIES = {
     "poolside/laguna-s-2.1:free":       { tools: true, reasoning: true, thinkingFormat: "nous", contextWindow: 262144, maxOutput: 131072 },
     "poolside/laguna-xs-2.1:free":      { tools: true, reasoning: true, thinkingFormat: "nous", contextWindow: 262144, maxOutput: 32768 },
     "stealth/missingno":                { tools: true, reasoning: true, thinkingFormat: "nous", contextWindow: 262144, maxOutput: 131072 },
+  },
+  "cbcn": {
+    "glm-5.2":            { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 48000 },
+    "glm-5.1":            { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 200000, maxOutput: 48000 },
+    "glm-5.0":            { reasoning: true, thinkingFormat: "openai", contextWindow: 200000, maxOutput: 48000 },
+    "glm-5.0-turbo":      { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 200000, maxOutput: 48000 },
+    "glm-5v-turbo":       { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 200000, maxOutput: 38000 },
+    "glm-4.7":            { reasoning: true, thinkingFormat: "openai", contextWindow: 200000, maxOutput: 48000 },
+    "minimax-m3":         { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 512000, maxOutput: 48000 },
+    "minimax-m2.7":       { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 200000, maxOutput: 48000 },
+    "kimi-k3":            { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 50000 },
+    "kimi-k2.7":          { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 256000, maxOutput: 32000 },
+    "kimi-k2.6":          { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 256000, maxOutput: 32000 },
+    "kimi-k2.5":          { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 164000, maxOutput: 32000 },
+    "hy3":                { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 192000, maxOutput: 64000 },
+    "deepseek-v4-pro":    { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 50000 },
+    "deepseek-v4-flash":  { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 50000 },
+    "deepseek-v3-2-volc": { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 96000, maxOutput: 32000 },
+  },
+  // Volcengine Agent Plan — Ark (registry alias "ark-ap"; key must match the
+  // alias, not the id "ark-ap-provider", since PROVIDER_MODELS indexes by alias).
+  // Dual openai/anthropic, so thinkingFormat is intentionally omitted;
+  // resolveFormat derives it per target protocol. ctx/maxOutput from Ark docs
+  // (1024k=1048576). doubao-seed-seed-* ids match registry short ids.
+  "ark-ap": {
+    "glm-5.2":            { reasoning: true, contextWindow: 1048576, maxOutput: 128000 },
+    "kimi-k2.7-code":     { vision: true, reasoning: true, contextWindow: 262144, maxOutput: 65536 },
+    "kimi-k2.6":          { vision: true, reasoning: true, contextWindow: 256000, maxOutput: 32000 },
+    "kimi-k3":            { vision: true, reasoning: true, thinkingFormat: "kimi", thinkingCanDisable: false, contextWindow: 1048576, maxOutput: 131072 },
+    "deepseek-v4-pro":    { vision: true, reasoning: true, contextWindow: 1048576, maxOutput: 384000 },
+    "deepseek-v4-flash":  { vision: true, reasoning: true, contextWindow: 1048576, maxOutput: 384000 },
+    "minimax-m3":         { vision: true, reasoning: true, contextWindow: 1048576, maxOutput: 512000 },
+    "minimax-m2.7":       { vision: true, reasoning: true, contextWindow: 204800, maxOutput: 131072 },
+  },
+  "volcengine-ark": {
+    "glm-5.2":            { contextWindow: 1048576, maxOutput: 128000 },
+    "kimi-k2.7-code":     { vision: true, contextWindow: 262144, maxOutput: 65536 },
+    "kimi-k2.6":          { vision: true, contextWindow: 256000, maxOutput: 32000 },
+    "kimi-k3":            { vision: true, reasoning: true, thinkingFormat: "kimi", thinkingCanDisable: false, contextWindow: 1048576, maxOutput: 131072 },
+    "deepseek-v4-pro":    { vision: true, reasoning: true, contextWindow: 1048576, maxOutput: 384000 },
+    "deepseek-v4-flash":  { vision: true, reasoning: true, contextWindow: 1048576, maxOutput: 384000 },
+    "minimax-m3":         { vision: true, reasoning: true, contextWindow: 1048576, maxOutput: 512000 },
+    "minimax-m2.7":       { vision: true, reasoning: true, contextWindow: 204800, maxOutput: 131072 },
+  },
   },
 };
 
@@ -636,6 +689,7 @@ export const PATTERN_CAPABILITIES = [
   { pattern: "*step-*",         caps: { reasoning: true, thinkingFormat: "step", contextWindow: 128000 } },
   { pattern: "*nemotron*",      caps: { reasoning: true, contextWindow: 128000 } },
   { pattern: "*ling-*",         caps: { reasoning: true, contextWindow: 128000 } },
+  { pattern: "doubao-seed-2*",  caps: { vision: true, reasoning: true, contextWindow: 256000, maxOutput: 256000  } },
 ];
 
 /**
