@@ -1,11 +1,47 @@
+import fs from "node:fs";
+import path from "node:path";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { DATA_DIR } from "@/lib/dataDir.js";
 
 const DEFAULT_MAX_RECORDS = 200;
 const DEFAULT_BATCH_SIZE = 20;
 const DEFAULT_FLUSH_INTERVAL_MS = 5000;
 const DEFAULT_MAX_JSON_SIZE = 5 * 1024;
 const CONFIG_CACHE_TTL_MS = 5000;
+
+const REQUEST_LOG_DIR = path.join(DATA_DIR, "logs", "request");
+const REQUEST_LOG_MAX_FILES = 100;
+
+// Fire-and-forget full request detail dump (untruncated) to DATA_DIR/logs/request/<id>.json.
+// Runs off the main path so it never blocks the DB write. One file per request,
+// rolling-deleted down to REQUEST_LOG_MAX_FILES oldest-first.
+function writeRequestDetailToFile(detail) {
+  try {
+    fs.mkdirSync(REQUEST_LOG_DIR, { recursive: true });
+  } catch {
+    return; // dir unwritable — skip, don't crash the request
+  }
+  const id = detail.id || generateDetailId(detail.model);
+  // Sanitize sensitive headers but keep full (untruncated) body/params.
+  const cloned = JSON.parse(JSON.stringify(detail || {}));
+  if (cloned.request?.headers) cloned.request.headers = sanitizeHeaders(cloned.request.headers);
+  const file = path.join(REQUEST_LOG_DIR, `${id}.json`);
+  fs.promises.writeFile(file, stringifyJson(cloned), "utf8").catch((e) => {
+    console.error("[requestDetailsRepo] full detail file write failed:", e);
+  });
+  // Rolling cleanup: delete oldest files beyond the cap.
+  fs.promises.readdir(REQUEST_LOG_DIR).then((entries) => {
+    if (entries.length <= REQUEST_LOG_MAX_FILES) return;
+    const stale = entries
+      .filter((n) => n.endsWith(".json"))
+      .sort((a, b) => a.localeCompare(b))
+      .slice(0, entries.length - REQUEST_LOG_MAX_FILES);
+    for (const name of stale) {
+      fs.promises.unlink(path.join(REQUEST_LOG_DIR, name)).catch(() => {});
+    }
+  }).catch(() => {});
+}
 
 let cachedConfig = null;
 let cachedConfigTs = 0;
@@ -145,6 +181,8 @@ export async function saveRequestDetail(detail) {
   if (!config.enabled) {return;}
 
   writeBuffer.push(detail);
+  // Off-main-path full dump so truncated DB records can be audited from disk.
+  writeRequestDetailToFile(detail);
 
   // Trigger immediate flush if batch threshold reached.
   // flushToDatabase() drains entire buffer in a loop, so all pushes during await are persisted.
