@@ -16,7 +16,7 @@
     "cli:pack": "npm --prefix cli run pack:cli",
     "cli:publish": "npm --prefix cli run publish:cli",
     "dev:server": "cp -r .next/static .next/standalone/.next/static 2>/dev/null; cp -r public .next/standalone/public 2>/dev/null; cp custom-server.js .next/standalone/; mkdir -p .next/standalone/node_modules/open-sse && cp -r open-sse/. .next/standalone/node_modules/open-sse/ && printf '{\"name\":\"open-sse\",\"version\":\"0.0.0\",\"main\":\"index.js\"}' > .next/standalone/node_modules/open-sse/package.json; cd .next/standalone && DATA_DIR=\"$HOME/.9router\" PORT=20129 node custom-server.js",
-    "build:standalone": "pnpm run build && rm -rf standalone-dist && cp -r .next/standalone standalone-dist && cp -r .next/static standalone-dist/.next/static && cp -r public standalone-dist/public && cp custom-server.js standalone-dist/ && cd standalone-dist && echo 'node-linker=hoisted' > .npmrc && pnpm install --prod --no-frozen-lockfile && mkdir -p node_modules/open-sse && cp -r ../open-sse/. node_modules/open-sse/ && printf '{\"name\":\"open-sse\",\"version\":\"0.0.0\",\"main\":\"index.js\"}' > node_modules/open-sse/package.json",
+    "build:standalone": "pnpm run build && rm -rf standalone-dist && cp -r .next/standalone standalone-dist && cp -r .next/static standalone-dist/.next/static && cp -r public standalone-dist/public && cp custom-server.js standalone-dist/ && cd standalone-dist && echo 'node-linker=hoisted' > .npmrc && node -e \"const fs=require('fs');const p='package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.dependencies={'next':'16.2.10'};j.devDependencies={};j.optionalDependencies={};fs.writeFileSync(p,JSON.stringify(j,null,2));\" && npm install --no-save --omit=dev --cpu=arm64 --os=darwin 2>/dev/null; mkdir -p node_modules/open-sse && cp -r ../open-sse/. node_modules/open-sse/ && printf '{\"name\":\"open-sse\",\"version\":\"0.0.0\",\"main\":\"index.js\"}' > node_modules/open-sse/package.json; echo '--- slimming standalone ---' && find . -name '*.map' -delete && rm -rf node_modules/.cache",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
   },
@@ -39,7 +39,7 @@
     "marked": "^18.0.1",
     "material-symbols": "^0.44.6",
     "monaco-editor": "^0.55.1",
-    "next": "^16.1.6",
+    "next": "16.2.10",
     "node-forge": "^1.3.3",
     "node-machine-id": "^1.1.12",
     "open": "^11.0.0",
