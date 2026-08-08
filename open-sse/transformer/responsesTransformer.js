@@ -6,6 +6,7 @@
 
 import fs from "fs";
 import path from "path";
+import { resolveLogRoot, enforceLogQuota } from "../utils/requestLogger.js";
 
 // Create log directory for responses (Node.js only)
 export function createResponsesLogger(model, logsDir = null) {
@@ -16,10 +17,14 @@ export function createResponsesLogger(model, logsDir = null) {
 
   const timestamp = new Date().toISOString().replace(/[:.]/g, "").slice(0, 15);
   const uniqueId = Math.random().toString(36).slice(2, 8);
-  const baseDir = logsDir || (typeof process !== "undefined" ? process.cwd() : ".");
-  const logDir = path.join(baseDir, "logs", `responses_${model}_${timestamp}_${uniqueId}`);
+  // Prefer an explicit logsDir, else resolve to a user-writable root
+  // (DATA_DIR/open-sse-logs) — never the app bundle cwd.
+  const baseDir = logsDir || resolveLogRoot();
+  const logDir = path.join(baseDir, `responses_${model}_${timestamp}_${uniqueId}`);
   
   try {
+    if (!fs.existsSync(baseDir)) fs.mkdirSync(baseDir, { recursive: true });
+    enforceLogQuota(baseDir);
     fs.mkdirSync(logDir, { recursive: true });
   } catch {
     return null;
