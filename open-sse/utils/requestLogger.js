@@ -1,12 +1,91 @@
 // Check if running in Node.js environment (has fs module)
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
 const isNode = typeof process !== "undefined" && process.versions?.node && typeof window === "undefined";
 
 // Check if logging is enabled via environment variable (default: false)
 const LOGGING_ENABLED = typeof process !== "undefined" && process.env?.ENABLE_REQUEST_LOGS === 'true';
 
+// Max total size of the open-sse log root before old sessions are evicted.
+// Default 200 MB. Override with OPEN_SSE_LOG_MAX_MB.
+const MAX_LOG_DIR_BYTES = (() => {
+  const mb = typeof process !== "undefined" && parseInt(process.env?.OPEN_SSE_LOG_MAX_MB || "", 10);
+  return (Number.isFinite(mb) && mb > 0 ? mb : 200) * 1024 * 1024;
+})();
+
 let fs = null;
 let path = null;
 let LOGS_DIR = null;
+
+// Resolve the log root directory.
+// Priority: OPEN_SSE_LOG_DIR > DATA_DIR (user-writable, injected by host app) > cwd.
+// We never assume cwd is writable — in a packaged app (Tauri/Electron) cwd points
+// inside the read-only app bundle, so writing there both fails and bloats the bundle.
+// Uses a static require for node:path so it works even before the lazy fs/path
+// modules are loaded (resolveLogRoot may be called synchronously by importers).
+export function resolveLogRoot() {
+  if (typeof process === "undefined") return ".";
+  const nodePath = (() => {
+    try { return require("node:path"); } catch { return null; }
+  })();
+  if (!nodePath) return ".";
+  const explicit = process.env?.OPEN_SSE_LOG_DIR;
+  if (explicit) return explicit;
+  const dataDir = process.env?.DATA_DIR;
+  if (dataDir) return nodePath.join(dataDir, "open-sse-logs");
+  return nodePath.join(process.cwd(), "open-sse-logs");
+}
+
+// Enforce a size quota on the log root: delete oldest session dirs (by mtime)
+// until total size is back under MAX_LOG_DIR_BYTES. Best-effort, never throws.
+// Uses its own require() for fs/path so it works even before the lazy-loaded
+// module-level fs/path are initialized.
+export function enforceLogQuota(rootDir) {
+  let nodeFs, nodePath;
+  try {
+    nodeFs = require("node:fs");
+    nodePath = require("node:path");
+  } catch {
+    return;
+  }
+  if (!rootDir) return;
+  try {
+    if (!nodeFs.existsSync(rootDir)) return;
+    // Recursively compute a directory's real on-disk size.
+    const dirSize = (dir) => {
+      let sum = 0;
+      let entries;
+      try { entries = nodeFs.readdirSync(dir, { withFileTypes: true }); } catch { return 0; }
+      for (const e of entries) {
+        const p = nodePath.join(dir, e.name);
+        try {
+          if (e.isDirectory()) sum += dirSize(p);
+          else sum += nodeFs.statSync(p).size || 0;
+        } catch { /* ignore unreadable */ }
+      }
+      return sum;
+    };
+    const items = nodeFs.readdirSync(rootDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => {
+        const p = nodePath.join(rootDir, e.name);
+        let mtime = 0, size = 0;
+        try { mtime = nodeFs.statSync(p).mtimeMs; } catch {}
+        try { size = dirSize(p); } catch {}
+        return { p, mtime, size };
+      });
+    let total = items.reduce((s, e) => s + e.size, 0);
+    // Sort oldest first; evict until under quota.
+    const sorted = items.sort((a, b) => a.mtime - b.mtime);
+    for (const e of sorted) {
+      if (total <= MAX_LOG_DIR_BYTES) break;
+      try {
+        nodeFs.rmSync(e.p, { recursive: true, force: true });
+        total -= e.size;
+      } catch {}
+    }
+  } catch {}
+}
 
 // Lazy load Node.js modules (avoid top-level await)
 async function ensureNodeModules() {
@@ -14,7 +93,7 @@ async function ensureNodeModules() {
   try {
     fs = await import("fs");
     path = await import("path");
-    LOGS_DIR = path.join(typeof process !== "undefined" && process.cwd ? process.cwd() : ".", "logs");
+    LOGS_DIR = resolveLogRoot();
   } catch {
     // Running in non-Node environment (Worker, Browser, etc.)
   }
@@ -42,6 +121,8 @@ async function createLogSession(sourceFormat, targetFormat, model) {
     if (!fs.existsSync(LOGS_DIR)) {
       fs.mkdirSync(LOGS_DIR, { recursive: true });
     }
+    // Evict oldest sessions if over the size quota before adding a new one.
+    enforceLogQuota(LOGS_DIR);
     
     const timestamp = formatTimestamp();
     const safeModel = (model || "unknown").replace(/[/:]/g, "-");
@@ -238,6 +319,7 @@ export function logError(provider, { error, url, model, requestBody }) {
     if (!fs.existsSync(LOGS_DIR)) {
       fs.mkdirSync(LOGS_DIR, { recursive: true });
     }
+    enforceLogQuota(LOGS_DIR);
     
     const date = new Date().toISOString().split("T")[0];
     const logPath = path.join(LOGS_DIR, `${provider}-${date}.log`);

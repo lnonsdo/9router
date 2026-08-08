@@ -51,19 +51,10 @@ async function getObservabilityConfig() {
   try {
     const { getSettings } = await import("./settingsRepo.js");
     const settings = await getSettings();
-    const envRequestLogs = process.env.ENABLE_REQUEST_LOGS;
-    if (envRequestLogs !== undefined) {
-      const enabled = envRequestLogs.toLowerCase() === "true";
-      cachedConfig = {
-        enabled,
-        maxRecords: settings.observabilityMaxRecords || parseInt(process.env.OBSERVABILITY_MAX_RECORDS || String(DEFAULT_MAX_RECORDS), 10),
-        batchSize: settings.observabilityBatchSize || parseInt(process.env.OBSERVABILITY_BATCH_SIZE || String(DEFAULT_BATCH_SIZE), 10),
-        flushIntervalMs: settings.observabilityFlushIntervalMs || parseInt(process.env.OBSERVABILITY_FLUSH_INTERVAL_MS || String(DEFAULT_FLUSH_INTERVAL_MS), 10),
-        maxJsonSize: (settings.observabilityMaxJsonSize || parseInt(process.env.OBSERVABILITY_MAX_JSON_SIZE || "5", 10)) * 1024,
-      };
-      cachedConfigTs = Date.now();
-      return cachedConfig;
-    }
+    // NOTE: ENABLE_REQUEST_LOGS controls open-sse's on-disk file dump only
+    // (standalone/logs). It must NOT gate the requestDetails DB table, otherwise
+    // turning off the file dump also kills the in-app request history. Observability
+    // (DB) is driven by the UI switch / OBSERVABILITY_ENABLED instead.
     const envFallback = process.env.OBSERVABILITY_ENABLED !== "false";
     const uiFlag = typeof settings.enableObservability === "boolean";
     const enabled = uiFlag
@@ -182,7 +173,7 @@ export async function saveRequestDetail(detail) {
 
   writeBuffer.push(detail);
   // Off-main-path full dump so truncated DB records can be audited from disk.
-  writeRequestDetailToFile(detail);
+  // writeRequestDetailToFile(detail);
 
   // Trigger immediate flush if batch threshold reached.
   // flushToDatabase() drains entire buffer in a loop, so all pushes during await are persisted.
