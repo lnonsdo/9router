@@ -13,6 +13,9 @@ const L = {
   budgetX: ["none", "low", "medium", "high", "xhigh", "max"],       // claude-budget
   gemini: ["minimal", "low", "medium", "high"],                     // gemini-3 thinkingLevel (no disable)
   hiMax: ["none", "high", "max"],                                   // deepseek (low/med→high, xhigh→max)
+  ark: ["none", "minimal", "low", "medium", "high"],                // Ark baseline enum
+  arkMax: ["none", "minimal", "low", "medium", "high", "max"],      // + max: deepseek-v4-* on Ark
+  arkFull: ["none", "minimal", "low", "medium", "high", "xhigh", "max"], // glm-5-2-260617 only
 };
 
 // thinkingFormat → valid selectable levels (source of truth for UI options).
@@ -29,6 +32,7 @@ const FORMAT_LEVELS = {
   minimax: L.onOff,
   hunyuan: L.base,
   step: L.base,
+  ark: L.ark,
 };
 
 const CODEX_GPT_5_6_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -46,6 +50,12 @@ const PATTERN_THINKING = [
   { provider: "codebuddy-cn", pattern: "deepseek-v4*", levels: ["low", "high", "xhigh"] },
   { provider: "codebuddy-cn", pattern: "hy3*",         levels: ["low", "high"] },
   { provider: "codebuddy-cn", pattern: "hy4*",         levels: ["high"] },
+  // Ark: only glm-5.2 takes none/xhigh/max; deepseek-v4-* additionally take max
+  // (Chat API only — applyFormat drops max on Responses). Everything else is L.ark.
+  { provider: "volcengine-ark", pattern: "*glm-5*", levels: L.arkFull },
+  { provider: "ark-ap", pattern: "*glm-5*", levels: L.arkFull },
+  { provider: "volcengine-ark", pattern: "*deepseek-v4*", levels: L.arkMax },
+  { provider: "ark-ap", pattern: "*deepseek-v4*", levels: L.arkMax },
 ];
 
 // Returns valid thinking levels for a model, or null when the model has no reasoning.

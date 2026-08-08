@@ -225,8 +225,26 @@ function stripAll(body) {
   if (body.request?.generationConfig) delete body.request.generationConfig.thinkingConfig;
 }
 
+// Ark effort enum is narrower on Responses than on Chat:
+//   Chat:      minimal/low/medium/high  (+ none & xhigh: glm-5.2 only,
+//                                        + max: glm-5.2 and deepseek-v4-*)
+//   Responses: minimal/low/medium/high  (no none/max; xhigh only via glm-5.2)
+// Unsupported values are silently ignored upstream (and still billed), so
+// clamp locally instead of forwarding them.
+function toArkEffort(level, supportedLevels, isResponses) {
+  const ok = supportedLevels || [];
+  let v = level === "none" ? "minimal" : level;
+  // max is unsupported on Responses (and on models without a "max" level).
+  // Downgrade to xhigh when the model supports it (glm-5.2), else high.
+  if (v === "max" && (isResponses || !ok.includes("max"))) {
+    v = ok.includes("xhigh") ? "xhigh" : "high";
+  }
+  if (v === "xhigh" && !ok.includes("xhigh")) v = "high";
+  return v;
+}
+
 // Apply unified thinking config to body in the resolved provider-native format.
-function applyFormat(fmt, body, cfg, caps, supportedLevels) {
+function applyFormat(fmt, body, cfg, caps, supportedLevels, targetFormat) {
   const none = cfg.mode === "none";
   const canDisable = caps.thinkingCanDisable !== false;
   // Model cannot disable thinking → clamp "none" to minimal effort instead.
@@ -301,6 +319,34 @@ function applyFormat(fmt, body, cfg, caps, supportedLevels) {
       body.reasoning_effort = level === "xhigh" || level === "max" ? "max" : "high";
       break;
     }
+    case "ark": {
+      // Volcengine Ark exposes three endpoints with two different thinking dialects.
+      // /v1/messages is Anthropic-compatible, so it takes Anthropic's
+      // thinking:{type,budget_tokens} and does NOT understand reasoning_effort.
+      if (targetFormat === "claude") {
+        applyFormat("claude-budget", body, cfg, caps, supportedLevels, targetFormat);
+        break;
+      }
+      // Chat (/v3/chat/completions) and Responses (/v3/responses) use Ark's own
+      // dialect, where thinking.type and reasoning_effort are coupled:
+      //   enabled  → effort may be minimal/low/medium/high (minimal = no thinking)
+      //   disabled → effort must be "minimal"; low/medium/high ERROR out.
+      // Ark's thinking here has no budget_tokens, so a Claude client's budget
+      // intent is folded into an effort level by toLevel().
+      const isResponses = targetFormat === "openai-responses";
+      if (none && canDisable) {
+        body.thinking = { type: "disabled" };
+        body.reasoning_effort = "minimal";
+        break;
+      }
+      const arkLevel = toLevel(eff);
+      // "auto" is unsupported on every model we route here except
+      // doubao-seed-1-6-250615 — send nothing and let the model default apply.
+      if (!arkLevel || arkLevel === "auto") break;
+      body.thinking = { type: "enabled" };
+      body.reasoning_effort = toArkEffort(arkLevel, supportedLevels, isResponses);
+      break;
+    }
     case "kimi": {
       if (none && canDisable) { body.thinking = { type: "disabled" }; break; }
       const effort = toKimiReasoningEffort(eff);
@@ -362,6 +408,6 @@ export function applyThinking(targetFormat, model, body, provider = null, intent
   const fmt = resolveFormat(targetFormat, cleanModel, provider);
   const supportedLevels = getThinkingLevels(provider, cleanModel);
   stripAll(body);
-  applyFormat(fmt, body, cfg, caps, supportedLevels);
+  applyFormat(fmt, body, cfg, caps, supportedLevels, targetFormat);
   return body;
 }
