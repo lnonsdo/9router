@@ -226,10 +226,10 @@ export const PROVIDER_CAPABILITIES = {
     "kimi-k2.7":          { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 256000, maxOutput: 32000 },
     "kimi-k2.6":          { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 256000, maxOutput: 32000 },
     "kimi-k2.5":          { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 164000, maxOutput: 32000 },
-    "hy3":                { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 192000, maxOutput: 64000 },
-    "deepseek-v4-pro":    { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 50000 },
-    "deepseek-v4-flash":  { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 50000 },
-    "deepseek-v3-2-volc": { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 96000, maxOutput: 32000 },
+    "hy3":                { vision: false, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 192000, maxOutput: 64000 },
+    "deepseek-v4-pro":    { vision: true, reasoning: true, thinkingFormat: "deepseek", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 384000 },
+    "deepseek-v4-flash":  { vision: true, reasoning: true, thinkingFormat: "deepseek", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 384000 },
+    "deepseek-v3-2-volc": { reasoning: true, thinkingFormat: "deepseek", thinkingCanDisable: false, contextWindow: 96000, maxOutput: 32000 },
   },
   // Volcengine Agent Plan — Ark (registry alias "ark-ap"; key must match the
   // alias, not the id "ark-ap-provider", since PROVIDER_MODELS indexes by alias).
@@ -237,20 +237,23 @@ export const PROVIDER_CAPABILITIES = {
   // its chat and responses endpoints, and its thinking has no budget_tokens —
   // so it must be pinned, not derived from the target protocol (deriving picks
   // claude-budget for /v1/messages clients and emits an ignored budget_tokens).
-  // ctx/maxOutput per Ark model list (docs 82379/1330310): glm-5-2 1024k/128k,
-  // deepseek-v4-* 1024k/384k, doubao-seed-2.1 & evolving 256k/256k,
-  // doubao-seed-2.0-lite/mini 256k/128k.
+  // ctx/maxOutput per Ark model list (docs 82379/1553576): glm-5-2 1024k/128k,
+  // deepseek-v4-* 1024k/384k, doubao-seed-evolving 1024k/256k,
+  // doubao-seed-2.1-pro/turbo 256k/256k, doubao-seed-2.0-lite/mini 256k/128k.
+  // NOTE: vision:false on the non-doubao models is INTENTIONAL — the Ark plan
+  // endpoints do not accept image blocks for them, even though the underlying
+  // models (kimi-k2.x, minimax-m3) are multimodal elsewhere. Do not "fix" to true.
   "ark-ap": {
-    "glm-5.2":            { reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 131072 },
-    "kimi-k2.7-code":     { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 262144, maxOutput: 65536 },
-    "kimi-k2.6":          { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 256000, maxOutput: 32000 },
-    "kimi-k3":            { vision: true, reasoning: true, thinkingFormat: "kimi", thinkingCanDisable: false, contextWindow: 1048576, maxOutput: 131072 },
-    "deepseek-v4-pro":    { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 384000 },
-    "deepseek-v4-flash":  { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 384000 },
-    "minimax-m3":         { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 512000 },
-    "minimax-m2.7":       { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 204800, maxOutput: 131072 },
-    "ark-code-latest":      { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 262144, maxOutput: 131072 },
-    "doubao-seed-evolving": { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 262144, maxOutput: 262144 },
+    "glm-5.2":            { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 131072 },
+    "kimi-k2.7-code":     { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 262144, maxOutput: 65536 },
+    "kimi-k2.6":          { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 256000, maxOutput: 32000 },
+    "kimi-k3":            { vision: false, reasoning: true, thinkingFormat: "kimi", thinkingCanDisable: false, contextWindow: 1048576, maxOutput: 131072 },
+    "deepseek-v4-pro":    { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 384000 },
+    "deepseek-v4-flash":  { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 384000 },
+    "minimax-m3":         { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 512000 },
+    "minimax-m2.7":       { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 204800, maxOutput: 131072 },
+    "ark-code-latest":      { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 262144 },
+    "doubao-seed-evolving": { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 262144 },
     "doubao-seed-2.1-pro":  { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 262144, maxOutput: 262144 },
     "doubao-seed-2.1-turbo":{ vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 262144, maxOutput: 262144 },
     "doubao-seed-2.0-lite": { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 262144, maxOutput: 131072 },
@@ -258,15 +261,15 @@ export const PROVIDER_CAPABILITIES = {
   },
   // Volcengine Ark (Coding Plan) — same endpoints/enum as "ark-ap".
   "volcengine-ark": {
-    "glm-5.2":            { reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 131072 },
-    "kimi-k2.7-code":     { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 262144, maxOutput: 65536 },
-    "kimi-k2.6":          { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 256000, maxOutput: 32000 },
-    "kimi-k3":            { vision: true, reasoning: true, thinkingFormat: "kimi", thinkingCanDisable: false, contextWindow: 1048576, maxOutput: 131072 },
-    "deepseek-v4-pro":    { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 384000 },
-    "deepseek-v4-flash":  { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 384000 },
-    "minimax-m3":         { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 512000 },
-    "minimax-m2.7":       { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 204800, maxOutput: 131072 },
-    "ark-code-latest":      { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 262144, maxOutput: 131072 },
+    "glm-5.2":            { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 131072 },
+    "kimi-k2.7-code":     { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 262144, maxOutput: 65536 },
+    "kimi-k2.6":          { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 256000, maxOutput: 32000 },
+    "kimi-k3":            { vision: false, reasoning: true, thinkingFormat: "kimi", thinkingCanDisable: false, contextWindow: 1048576, maxOutput: 131072 },
+    "deepseek-v4-pro":    { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 384000 },
+    "deepseek-v4-flash":  { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 384000 },
+    "minimax-m3":         { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 512000 },
+    "minimax-m2.7":       { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 204800, maxOutput: 131072 },
+    "ark-code-latest":      { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 262144 },
     "doubao-seed-2.1-pro":  { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 262144, maxOutput: 262144 },
     "doubao-seed-2.1-turbo":{ vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 262144, maxOutput: 262144 },
     "doubao-seed-2.0-lite": { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 262144, maxOutput: 131072 },
