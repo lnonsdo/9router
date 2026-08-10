@@ -17,6 +17,15 @@ const DATE_FMT = (iso) => {
 
 const num = (v) => (typeof v === "number" ? v.toLocaleString() : "0");
 
+// Compact number formatting to avoid long token counts overflowing cards/columns.
+// M = million, K = thousand. Keeps exact values in detailed drawers.
+const fmtCompact = (v) => {
+  const n = typeof v === "number" ? v : 0;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2).replace(/\.?0+$/, "")}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}K`;
+  return String(n);
+};
+
 // Mirror of RequestDetailsTab's token helpers so session requests render consistently.
 function getCachedTokens(tokens) {
   return (
@@ -38,10 +47,10 @@ function SessionSummary({ total }) {
   const items = [
     { label: "Sessions", value: num(total.sessions) },
     { label: "Requests", value: num(total.requests) },
-    { label: "Input Tokens", value: num(total.promptTokens) },
-    { label: "Output Tokens", value: num(total.completionTokens) },
-    { label: "Cached Tokens", value: num(total.cachedTokens) },
-    { label: "Cache Creation", value: num(total.cacheCreationTokens) },
+    { label: "Input Tokens", value: fmtCompact(total.promptTokens) },
+    { label: "Output Tokens", value: fmtCompact(total.completionTokens) },
+    { label: "Cached Tokens", value: fmtCompact(total.cachedTokens) },
+    { label: "Cache Creation", value: fmtCompact(total.cacheCreationTokens) },
     { label: "Cost", value: `$${Number(total.cost || 0).toFixed(4)}` },
   ];
   return (
@@ -451,10 +460,10 @@ export default function TraceTab() {
                     <td className="whitespace-nowrap p-4 text-sm text-text-muted">{DATE_FMT(s.firstSeen)}</td>
                     <td className="whitespace-nowrap p-4 text-sm text-text-muted">{DATE_FMT(s.lastSeen)}</td>
                     <td className="p-4 text-sm text-text-main text-right font-mono">{num(s.requests)}</td>
-                    <td className="p-4 text-sm text-text-main text-right font-mono">{num(s.promptTokens)}</td>
-                    <td className="p-4 text-sm text-text-main text-right font-mono">{num(s.completionTokens)}</td>
-                    <td className="p-4 text-sm text-text-main text-right font-mono">{num(s.cachedTokens)}</td>
-                    <td className="p-4 text-sm text-text-main text-right font-mono">{num(s.cacheCreationTokens)}</td>
+                    <td className="p-4 text-sm text-text-main text-right font-mono">{fmtCompact(s.promptTokens)}</td>
+                    <td className="p-4 text-sm text-text-main text-right font-mono">{fmtCompact(s.completionTokens)}</td>
+                    <td className="p-4 text-sm text-text-main text-right font-mono">{fmtCompact(s.cachedTokens)}</td>
+                    <td className="p-4 text-sm text-text-main text-right font-mono">{fmtCompact(s.cacheCreationTokens)}</td>
                     <td className="p-4 text-sm text-text-main text-right font-mono">${Number(s.cost || 0).toFixed(4)}</td>
                     <td className="max-w-[260px] p-4 text-xs text-text-muted">
                       <div className="flex flex-col gap-0.5">
