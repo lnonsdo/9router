@@ -72,6 +72,7 @@ export function createResponsesApiTransformStream(logger = null) {
     reasoningPartAdded: false,
     reasoningDone: false,
     inThinking: false,
+    usage: null,
     funcArgsBuf: {},
     funcNames: {},
     funcCallIds: {},
@@ -238,7 +239,8 @@ export function createResponsesApiTransformStream(logger = null) {
           created_at: state.created,
           status: "completed",
           background: false,
-          error: null
+          error: null,
+          usage: state.usage
         }
       });
     }
@@ -417,6 +419,29 @@ export function createResponsesApiTransformStream(logger = null) {
               state.funcArgsBuf[tcIdx] += tc.function.arguments;
             }
           }
+        }
+
+        // Capture usage from the terminal chunk (OpenAI/CodeBuddy send it on the
+        // last frame, often alongside finish_reason). Map the Chat Completions
+        // usage shape into the Responses API usage object so clients that read
+        // response.usage (e.g. for token accounting) don't see undefined.
+        if (parsed.usage) {
+          const u = parsed.usage;
+          const inputTokens = u.prompt_tokens ?? u.prompt_tokens_details?.cached_tokens ?? 0;
+          const cachedTokens =
+            u.prompt_cache_hit_tokens ??
+            u.prompt_tokens_details?.cached_tokens ??
+            u.cached_tokens ?? 0;
+          const outputTokens = u.completion_tokens ?? 0;
+          state.usage = {
+            input_tokens: inputTokens,
+            cached_tokens: cachedTokens,
+            output_tokens: outputTokens,
+            total_tokens: u.total_tokens ?? (inputTokens + outputTokens),
+            output_tokens_details: u.completion_tokens_details
+              ? { reasoning_tokens: u.completion_tokens_details.reasoning_tokens ?? 0 }
+              : undefined,
+          };
         }
 
         // Handle finish_reason
