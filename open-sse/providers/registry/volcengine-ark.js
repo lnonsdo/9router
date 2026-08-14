@@ -28,6 +28,7 @@ export default {
     { id: "doubao-seed-2.0-lite", name: "Doubao Seed 2.0 Lite" },
     { id: "doubao-seed-2.0-mini", name: "Doubao Seed 2.0 Mini" },
     { id: "glm-5.2", name: "GLM-5.2" },
+    { id: "glm-5.3", name: "GLM-5.3" },
     { id: "kimi-k2.7-code", name: "Kimi K2.7 Code" },
     { id: "kimi-k3", name: "Kimi K3" },
     { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro" },
