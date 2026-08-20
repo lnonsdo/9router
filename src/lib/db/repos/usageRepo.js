@@ -739,11 +739,20 @@ function formatLogDate(date = new Date()) {
 // No-op: request log is now derived from usageHistory table on read.
 export async function appendRequestLog() {}
 
-// Aggregate per-session token/cost usage. A "session" is the conversation-stable
-// id resolved by open-sse's sessionManager (Claude Code session, Antigravity
-// conversation, Kiro thread, etc.). Rows without a sessionId (legacy records or
-// clients that don't carry one) are grouped under a single null bucket and surfaced
-// as "unclassified".
+// Aggregate per-session (or per-connection) token/cost usage.
+//
+// groupBy:
+//   - "session" (default): group by the conversation-stable id resolved by
+//     open-sse's sessionManager (Claude Code session, Antigravity conversation,
+//     Kiro thread, etc.). NOTE: some subagent tools (e.g. zcode on the Claude
+//     protocol) mint a NEW `claude:_session_<uuid>` per request, so each logical
+//     conversation splinters into many one-shot "sessions". The connection view
+//     below collapses those fragments back together.
+//   - "connection": group by connectionId instead. Use this to see token spend
+//     per account/connection without the per-request session fragmentation.
+//
+// Rows without a sessionId (legacy records or clients that don't carry one) are
+// grouped under a single null bucket and surfaced as "unclassified".
 export async function getSessionStats(filter = {}) {
   try {
     const db = await getAdapter();
@@ -755,11 +764,17 @@ export async function getSessionStats(filter = {}) {
     if (filter.connectionId) { conds.push("connectionId = ?"); params.push(filter.connectionId); }
 
     const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
+    // viewMode is the user-facing grouping mode ("session" | "connection");
+    // groupCol is the actual SQL column used for GROUP BY. Keep them separate so
+    // the "is this the connection view?" checks below compare against the mode,
+    // not the column name.
+    const viewMode = filter.groupBy === "connection" ? "connection" : "session";
+    // Identity key used both for the SQL GROUP BY and the in-JS cache accumulation.
+    const keyExpr = viewMode === "connection" ? "COALESCE(connectionId, '')" : "COALESCE(sessionId, '')";
 
-    // GROUP BY sessionId (NULLs collapse into one group in SQLite).
     const rows = db.all(
       `SELECT
-         COALESCE(sessionId, '') AS sessionId,
+         ${keyExpr} AS grpKey,
          COUNT(*) AS requests,
          SUM(promptTokens) AS promptTokens,
          SUM(completionTokens) AS completionTokens,
@@ -768,35 +783,40 @@ export async function getSessionStats(filter = {}) {
          MAX(timestamp) AS lastSeen,
          GROUP_CONCAT(DISTINCT provider) AS providers,
          GROUP_CONCAT(DISTINCT model) AS models,
-         MAX(connectionId) AS connectionId
+         MAX(connectionId) AS connectionId,
+         MAX(sessionId) AS sessionId
        FROM usageHistory ${where}
-       GROUP BY sessionId
+       GROUP BY ${keyExpr}
        ORDER BY lastSeen DESC`,
       params
     );
 
     // Cache tokens live inside the JSON `tokens` column, which we can't reliably
     // SUM across engines (json_extract availability varies). Pull the raw tokens
-    // and accumulate cached/cache-creation in JS, keyed by the same sessionId.
+    // and accumulate cached/cache-creation in JS, keyed by the same group key.
     const tokenRows = db.all(
-      `SELECT COALESCE(sessionId, '') AS sessionId, tokens FROM usageHistory ${where}`,
+      `SELECT ${keyExpr} AS grpKey, tokens FROM usageHistory ${where}`,
       params
     );
-    const cacheBySession = {};
+    const cacheByGroup = {};
     for (const tr of tokenRows) {
-      const key = tr.sessionId || "";
+      const key = tr.grpKey || "";
       const t = parseJson(tr.tokens, {});
       const cached = t?.cached_tokens ?? t?.cache_read_input_tokens ?? 0;
       const cacheCreate = t?.cache_creation_input_tokens ?? 0;
-      if (!cacheBySession[key]) cacheBySession[key] = { cachedTokens: 0, cacheCreationTokens: 0 };
-      cacheBySession[key].cachedTokens += Number(cached) || 0;
-      cacheBySession[key].cacheCreationTokens += Number(cacheCreate) || 0;
+      if (!cacheByGroup[key]) cacheByGroup[key] = { cachedTokens: 0, cacheCreationTokens: 0 };
+      cacheByGroup[key].cachedTokens += Number(cached) || 0;
+      cacheByGroup[key].cacheCreationTokens += Number(cacheCreate) || 0;
     }
 
     const sessions = rows.map((r) => {
-      const cache = cacheBySession[r.sessionId] || { cachedTokens: 0, cacheCreationTokens: 0 };
+      const cache = cacheByGroup[r.grpKey] || { cachedTokens: 0, cacheCreationTokens: 0 };
+      const isConnectionView = viewMode === "connection";
       return {
-        sessionId: r.sessionId || null,
+        // In connection view the natural identity is connectionId; in session view it's sessionId.
+        sessionId: isConnectionView ? (r.connectionId || null) : (r.sessionId || null),
+        connectionId: r.connectionId || null,
+        groupBy: viewMode,
         requests: r.requests || 0,
         promptTokens: r.promptTokens || 0,
         completionTokens: r.completionTokens || 0,
@@ -807,7 +827,6 @@ export async function getSessionStats(filter = {}) {
         lastSeen: r.lastSeen,
         providers: (r.providers || "").split(",").filter(Boolean),
         models: (r.models || "").split(",").filter(Boolean),
-        connectionId: r.connectionId || null,
       };
     });
 
@@ -824,10 +843,15 @@ export async function getSessionStats(filter = {}) {
       { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cacheCreationTokens: 0, cost: 0 }
     );
 
-    return { sessions, total, unclassifiedCount: sessions.filter((s) => s.sessionId === null).length };
+    // "unclassified" only applies to the session view (rows with NULL sessionId).
+    const unclassifiedCount = viewMode === "session"
+      ? sessions.filter((s) => s.sessionId === null).length
+      : 0;
+
+    return { sessions, total, unclassifiedCount, groupBy: viewMode };
   } catch (e) {
     console.error("[usageRepo] getSessionStats failed:", e.message);
-    return { sessions: [], total: { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cacheCreationTokens: 0, cost: 0 }, unclassifiedCount: 0 };
+    return { sessions: [], total: { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cacheCreationTokens: 0, cost: 0 }, unclassifiedCount: 0, groupBy: filter.groupBy || "session" };
   }
 }
 
