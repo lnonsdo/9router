@@ -1,3 +1,5 @@
+import { CLAUDE_API_HEADERS } from "../shared.js";
+
 export default {
   id: "ark-ap-provider",
   alias: "ark-ap",
@@ -21,6 +23,25 @@ export default {
     baseUrl: "https://ark.cn-beijing.volces.com/api/plan/v3/chat/completions",
     // forceStream: true,
   },
+  transports: [
+    {
+      format: "openai",
+      baseUrl: "https://ark.cn-beijing.volces.com/api/plan/v3/chat/completions",
+      auth: { combined: true, header: "Authorization", scheme: "bearer" },
+    },
+    {
+      format: "openai-responses",
+      baseUrl: "https://ark.cn-beijing.volces.com/api/plan/v3/responses",
+      auth: { combined: true, header: "Authorization", scheme: "bearer" },
+      forceStream: true,
+    },
+    {
+      format: "claude",
+      baseUrl: "https://ark.cn-beijing.volces.com/api/plan/v1/messages",
+      headers: { ...CLAUDE_API_HEADERS },
+      auth: { combined: true, header: "x-api-key", scheme: "raw" },
+    },
+  ],
   models: [
     { id: "ark-code-latest", name: "Ark Code (Latest)" },
     { id: "doubao-seed-evolving", name: "Doubao Seed Evolving" },
