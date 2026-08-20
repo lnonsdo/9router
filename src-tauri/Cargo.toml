@@ -7,7 +7,7 @@
 # `nine-router-desktop` while the user-facing productName stays "9Router".
 [package]
 name = "nine-router-desktop"
-version = "0.5.50"
+version = "0.5.55"
 description = "9Router desktop app (Tauri shell)"
 authors = ["9Router contributors"]
 edition = "2021"
