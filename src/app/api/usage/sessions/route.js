@@ -3,8 +3,8 @@ import { getSessionStats } from "@/lib/usageDb";
 
 /**
  * GET /api/usage/sessions
- * Aggregate token/cost usage grouped by conversation session.
- * Query parameters: connectionId, startDate, endDate
+ * Aggregate token/cost usage grouped by conversation session (default) or connection.
+ * Query parameters: connectionId, startDate, endDate, groupBy ("session" | "connection")
  */
 export async function GET(request) {
   try {
@@ -13,11 +13,13 @@ export async function GET(request) {
     const connectionId = searchParams.get("connectionId");
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
+    const groupBy = searchParams.get("groupBy");
 
     const filter = {};
     if (connectionId) filter.connectionId = connectionId;
     if (startDate) filter.startDate = startDate;
     if (endDate) filter.endDate = endDate;
+    if (groupBy === "session" || groupBy === "connection") filter.groupBy = groupBy;
 
     const result = await getSessionStats(filter);
 

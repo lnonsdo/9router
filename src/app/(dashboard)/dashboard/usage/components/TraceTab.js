@@ -5,6 +5,7 @@ import Card from "@/shared/components/Card";
 import Button from "@/shared/components/Button";
 import Drawer from "@/shared/components/Drawer";
 import Pagination from "@/shared/components/Pagination";
+import SegmentedControl from "@/shared/components/SegmentedControl";
 import { cn } from "@/shared/utils/cn";
 
 const DATE_FMT = (iso) => {
@@ -26,6 +27,16 @@ const fmtCompact = (v) => {
   return String(n);
 };
 
+// Cache hit rate = cached (cache-read) tokens / total input tokens. promptTokens
+// is the canonical cache-INCLUSIVE input (new input + cache read + cache write),
+// so this ratio reflects what fraction of input was served from cache.
+const hitRate = (cached, prompt) => {
+  const c = Number(cached) || 0;
+  const p = Number(prompt) || 0;
+  if (p <= 0) return "—";
+  return `${((c / p) * 100).toFixed(1)}%`;
+};
+
 // Mirror of RequestDetailsTab's token helpers so session requests render consistently.
 function getCachedTokens(tokens) {
   return (
@@ -43,9 +54,9 @@ function getInputTokens(tokens) {
   return prompt;
 }
 
-function SessionSummary({ total }) {
+function SessionSummary({ total, groupBy = "session" }) {
   const items = [
-    { label: "Sessions", value: num(total.sessions) },
+    { label: groupBy === "connection" ? "Connections" : "Sessions", value: num(total.sessions) },
     { label: "Requests", value: num(total.requests) },
     { label: "Input Tokens", value: fmtCompact(total.promptTokens) },
     { label: "Output Tokens", value: fmtCompact(total.completionTokens) },
@@ -143,18 +154,23 @@ function CollapsibleSection({ title, children, defaultOpen = false, icon = null 
   );
 }
 
-// Inner drawer: session aggregate + the requests that make up this session.
-function SessionDrawer({ session, onClose, onViewRequest }) {
+// Inner drawer: aggregate + the requests that make up this session/connection.
+function SessionDrawer({ session, groupBy = "session", onClose, onViewRequest }) {
   const [requests, setRequests] = useState([]);
   const [pagination, setPagination] = useState({ page: 1, pageSize: 20, totalItems: 0, totalPages: 0 });
   const [loading, setLoading] = useState(false);
-  const sessionId = session?.sessionId;
+  const isConnectionView = groupBy === "connection";
+  // Drill-down key: in connection view collapse all (fragmented) sessions under
+  // the connection; otherwise filter by the stable session id.
+  const drillKey = isConnectionView ? session?.connectionId : session?.sessionId;
 
   const fetchRequests = useCallback(async (page = 1) => {
-    if (!sessionId) return;
+    if (!drillKey) return;
     setLoading(true);
     try {
-      const params = new URLSearchParams({ sessionId, page: String(page), pageSize: "20" });
+      const params = new URLSearchParams({ page: String(page), pageSize: "20" });
+      if (isConnectionView) params.append("connectionId", drillKey);
+      else params.append("sessionId", drillKey);
       const res = await fetch(`/api/usage/session-requests?${params}`);
       const data = await res.json();
       setRequests(data.details || []);
@@ -164,26 +180,28 @@ function SessionDrawer({ session, onClose, onViewRequest }) {
     } finally {
       setLoading(false);
     }
-  }, [sessionId]);
+  }, [drillKey, isConnectionView]);
 
   useEffect(() => {
-    if (sessionId) fetchRequests(1);
-  }, [sessionId, fetchRequests]);
+    if (drillKey) fetchRequests(1);
+  }, [drillKey, fetchRequests]);
 
   if (!session) return null;
 
   return (
-    <Drawer isOpen={!!session} onClose={onClose} title="Session Trace" width="xl">
+    <Drawer isOpen={!!session} onClose={onClose} title={isConnectionView ? "Connection Trace" : "Session Trace"} width="xl">
       <div className="space-y-6">
         <div className="grid min-w-0 grid-cols-1 gap-4 text-sm sm:grid-cols-2">
           <div>
-            <span className="text-text-muted">Session ID:</span>{" "}
-            <span className="break-all font-mono text-text-main">{session.sessionId || "未归类"}</span>
+            <span className="text-text-muted">{isConnectionView ? "Connection ID:" : "Session ID:"}</span>{" "}
+            <span className="break-all font-mono text-text-main">{drillKey || "未归类"}</span>
           </div>
-          <div>
-            <span className="text-text-muted">Connection:</span>{" "}
-            <span className="font-mono text-text-main">{session.connectionId || "—"}</span>
-          </div>
+          {!isConnectionView && (
+            <div>
+              <span className="text-text-muted">Connection:</span>{" "}
+              <span className="font-mono text-text-main">{session.connectionId || "—"}</span>
+            </div>
+          )}
           <div>
             <span className="text-text-muted">First Seen:</span>{" "}
             <span className="text-text-main">{DATE_FMT(session.firstSeen)}</span>
@@ -216,6 +234,10 @@ function SessionDrawer({ session, onClose, onViewRequest }) {
             <span className="text-text-muted">Cache Creation:</span>{" "}
             <span className="font-mono text-text-main">{num(session.cacheCreationTokens)}</span>
           </div>
+          <div>
+            <span className="text-text-muted">Hit Rate:</span>{" "}
+            <span className="font-mono text-text-main">{hitRate(session.cachedTokens, session.promptTokens)}</span>
+          </div>
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -242,7 +264,9 @@ function SessionDrawer({ session, onClose, onViewRequest }) {
         </div>
 
         <div>
-          <div className="mb-2 font-semibold text-sm text-text-main">Requests in this session</div>
+          <div className="mb-2 font-semibold text-sm text-text-main">
+            {isConnectionView ? "Requests on this connection" : "Requests in this session"}
+          </div>
           <Card padding="none">
             <div className="overflow-x-auto">
               <table className="w-full min-w-[640px]">
@@ -316,6 +340,10 @@ export default function TraceTab() {
   const [activeRequest, setActiveRequest] = useState(null);
 
   const [filters, setFilters] = useState({ connectionId: "", startDate: "", endDate: "", search: "" });
+  // "session" = group by conversation-stable session id (may fragment for subagent
+  // tools like zcode that mint a new claude:_session_<uuid> per request).
+  // "connection" = group by connection id to collapse those fragments together.
+  const [groupBy, setGroupBy] = useState("session");
 
   const fetchProviders = useCallback(async () => {
     try {
@@ -329,6 +357,7 @@ export default function TraceTab() {
     setLoading(true);
     try {
       const params = new URLSearchParams();
+      params.append("groupBy", groupBy);
       if (filters.connectionId) params.append("connectionId", filters.connectionId);
       if (filters.startDate) params.append("startDate", filters.startDate);
       if (filters.endDate) params.append("endDate", filters.endDate);
@@ -342,7 +371,7 @@ export default function TraceTab() {
     } finally {
       setLoading(false);
     }
-  }, [filters.connectionId, filters.startDate, filters.endDate]);
+  }, [groupBy, filters.connectionId, filters.startDate, filters.endDate]);
 
   useEffect(() => { fetchProviders(); }, [fetchProviders]);
   useEffect(() => { fetchSessions(); }, [fetchSessions]);
@@ -350,15 +379,18 @@ export default function TraceTab() {
   const visibleSessions = filters.search
     ? sessions.filter((s) =>
         (s.sessionId || "").toLowerCase().includes(filters.search.toLowerCase()) ||
+        (s.connectionId || "").toLowerCase().includes(filters.search.toLowerCase()) ||
         (s.providers || []).some((p) => p.toLowerCase().includes(filters.search.toLowerCase())) ||
         (s.models || []).some((m) => m.toLowerCase().includes(filters.search.toLowerCase()))
       )
     : sessions;
 
-  // Real session count excludes the "unclassified" bucket.
-  const realSessionCount = unclassified > 0 ? sessions.length - 1 : sessions.length;
+  const isConnectionView = groupBy === "connection";
+  // In connection view every row is a real connection (no unclassified bucket).
+  const realSessionCount = isConnectionView ? sessions.length : (unclassified > 0 ? sessions.length - 1 : sessions.length);
 
   const handleClearFilters = () => setFilters({ connectionId: "", startDate: "", endDate: "", search: "" });
+  const handleGroupByChange = (v) => { setGroupBy(v); setSelected(null); setActiveRequest(null); };
   const handleView = (s) => { setSelected(s); setActiveRequest(null); };
   const handleCloseSession = () => setSelected(null);
   const handleViewRequest = (r) => setActiveRequest(r);
@@ -366,7 +398,27 @@ export default function TraceTab() {
 
   return (
     <div className="flex min-w-0 flex-col gap-6">
-      <SessionSummary total={{ ...total, sessions: realSessionCount }} />
+      <SessionSummary total={{ ...total, sessions: realSessionCount }} groupBy={groupBy} />
+
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-sm">
+          <span className="text-text-muted">Group by</span>
+          <SegmentedControl
+            options={[
+              { value: "session", label: "Session" },
+              { value: "connection", label: "Connection" },
+            ]}
+            value={groupBy}
+            onChange={handleGroupByChange}
+            className="w-auto"
+          />
+        </div>
+        {isConnectionView && (
+          <div className="text-xs text-text-muted">
+            按连接分组：会合并同一连接下所有（含碎片化的）会话请求
+          </div>
+        )}
+      </div>
 
       <Card padding="md">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -410,7 +462,7 @@ export default function TraceTab() {
         </div>
       </Card>
 
-      {unclassified > 0 && (
+      {!isConnectionView && unclassified > 0 && (
         <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-2 text-sm text-amber-700 dark:text-amber-300">
           有 {unclassified} 条请求未携带会话标识（历史数据或客户端未发送 session），已归入"未归类"。
         </div>
@@ -421,7 +473,7 @@ export default function TraceTab() {
           <table className="w-full min-w-[860px]">
             <thead>
               <tr className="border-b border-black/5 dark:border-white/5">
-                <th className="text-left p-4 text-sm font-semibold text-text-main">Session</th>
+                <th className="text-left p-4 text-sm font-semibold text-text-main">{isConnectionView ? "Connection" : "Session"}</th>
                 <th className="text-left p-4 text-sm font-semibold text-text-main">First Seen</th>
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Last Seen</th>
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Requests</th>
@@ -429,6 +481,7 @@ export default function TraceTab() {
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Output Tokens</th>
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Cached</th>
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Cache Create</th>
+                <th className="text-right p-4 text-sm font-semibold text-text-main">Hit Rate</th>
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Cost</th>
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Providers / Models</th>
                 <th className="text-center p-4 text-sm font-semibold text-text-main">Action</th>
@@ -437,7 +490,7 @@ export default function TraceTab() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={11} className="p-8 text-center text-text-muted">
+                  <td colSpan={12} className="p-8 text-center text-text-muted">
                     <div className="flex items-center justify-center gap-2">
                       <span className="material-symbols-outlined animate-spin text-[20px]">progress_activity</span>
                       Loading...
@@ -446,16 +499,18 @@ export default function TraceTab() {
                 </tr>
               ) : visibleSessions.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="p-8 text-center text-text-muted">暂无会话数据</td>
+                  <td colSpan={12} className="p-8 text-center text-text-muted">暂无会话数据</td>
                 </tr>
               ) : (
                 visibleSessions.map((s, i) => (
                   <tr
-                    key={`${s.sessionId || "unclassified"}-${i}`}
+                    key={`${groupBy}-${(isConnectionView ? s.connectionId : s.sessionId) || "unclassified"}-${i}`}
                     className="border-b border-black/5 dark:border-white/5 last:border-b-0 hover:bg-black/[0.02] dark:hover:bg-white/[0.02] transition-colors"
                   >
-                    <td className="max-w-[240px] truncate p-4 font-mono text-sm text-text-main" title={s.sessionId || ""}>
-                      {s.sessionId ? s.sessionId : <span className="text-text-muted">未归类</span>}
+                    <td className="max-w-[240px] truncate p-4 font-mono text-sm text-text-main" title={isConnectionView ? (s.connectionId || "") : (s.sessionId || "")}>
+                      {(isConnectionView ? s.connectionId : s.sessionId)
+                        ? (isConnectionView ? s.connectionId : s.sessionId)
+                        : <span className="text-text-muted">未归类</span>}
                     </td>
                     <td className="whitespace-nowrap p-4 text-sm text-text-muted">{DATE_FMT(s.firstSeen)}</td>
                     <td className="whitespace-nowrap p-4 text-sm text-text-muted">{DATE_FMT(s.lastSeen)}</td>
@@ -464,6 +519,7 @@ export default function TraceTab() {
                     <td className="p-4 text-sm text-text-main text-right font-mono">{fmtCompact(s.completionTokens)}</td>
                     <td className="p-4 text-sm text-text-main text-right font-mono">{fmtCompact(s.cachedTokens)}</td>
                     <td className="p-4 text-sm text-text-main text-right font-mono">{fmtCompact(s.cacheCreationTokens)}</td>
+                    <td className="p-4 text-sm text-text-main text-right font-mono whitespace-nowrap">{hitRate(s.cachedTokens, s.promptTokens)}</td>
                     <td className="p-4 text-sm text-text-main text-right font-mono">${Number(s.cost || 0).toFixed(4)}</td>
                     <td className="max-w-[260px] p-4 text-xs text-text-muted">
                       <div className="flex flex-col gap-0.5">
@@ -482,7 +538,7 @@ export default function TraceTab() {
         </div>
       </Card>
 
-      <SessionDrawer session={selected} onClose={handleCloseSession} onViewRequest={handleViewRequest} />
+      <SessionDrawer session={selected} groupBy={groupBy} onClose={handleCloseSession} onViewRequest={handleViewRequest} />
       <RequestDetailDrawer detail={activeRequest} onClose={handleCloseRequest} />
     </div>
   );
