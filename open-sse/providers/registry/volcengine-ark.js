@@ -1,3 +1,5 @@
+import { CLAUDE_API_HEADERS } from "../shared.js";
+
 export default {
   id: "volcengine-ark",
   priority: 270,
@@ -21,6 +23,25 @@ export default {
     baseUrl: "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions",
     headers: {},
   },
+  transports: [
+    {
+      format: "openai",
+      baseUrl: "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions",
+      auth: { combined: true, header: "Authorization", scheme: "bearer" },
+    },
+    {
+      format: "openai-responses",
+      baseUrl: "https://ark.cn-beijing.volces.com/api/coding/v3/responses",
+      auth: { combined: true, header: "Authorization", scheme: "bearer" },
+      forceStream: true,
+    },
+    {
+      format: "claude",
+      baseUrl: "https://ark.cn-beijing.volces.com/api/coding/v1/messages",
+      headers: { ...CLAUDE_API_HEADERS },
+      auth: { combined: true, header: "x-api-key", scheme: "raw" },
+    },
+  ],
   models: [
     { id: "ark-code-latest", name: "Ark Code (Latest)" },
     { id: "doubao-seed-2.1-turbo", name: "Doubao Seed 2.1 Turbo" },
