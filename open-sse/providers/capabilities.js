@@ -182,6 +182,8 @@ export const PROVIDER_CAPABILITIES = {
   // (see registry thinkingFormat). `onlyReasoning` models can't turn thinking
   // off → thinkingCanDisable:false (clamped to minimal instead of disabled).
   "codebuddy-cn": {
+    "glm-5.3":            { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 48000 },
+    "glm-5.3-flash":      { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 48000 },
     "glm-5.2":            { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 48000 },
     "glm-5.1":            { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 200000, maxOutput: 48000 },
     "glm-5.0":            { reasoning: true, thinkingFormat: "openai", contextWindow: 200000, maxOutput: 48000 },
@@ -214,6 +216,8 @@ export const PROVIDER_CAPABILITIES = {
     "laguna-xs-2.1": { reasoning: true, thinkingFormat: "openai", contextWindow: 200000, maxOutput: 32000 },
   },
   "cbcn": {
+    "glm-5.3":            { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 48000 },
+    "glm-5.3-flash":      { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 48000 },
     "glm-5.2":            { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 48000 },
     "glm-5.1":            { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 200000, maxOutput: 48000 },
     "glm-5.0":            { reasoning: true, thinkingFormat: "openai", contextWindow: 200000, maxOutput: 48000 },
@@ -227,6 +231,7 @@ export const PROVIDER_CAPABILITIES = {
     "kimi-k2.6":          { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 256000, maxOutput: 32000 },
     "kimi-k2.5":          { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 164000, maxOutput: 32000 },
     "hy3":                { vision: false, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 192000, maxOutput: 64000 },
+    "hy4-preview":           { vision: false, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 64000 },
     "deepseek-v4-pro":    { vision: true, reasoning: true, thinkingFormat: "deepseek", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 384000 },
     "deepseek-v4-flash":  { vision: true, reasoning: true, thinkingFormat: "deepseek", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 384000 },
     "deepseek-v3-2-volc": { reasoning: true, thinkingFormat: "deepseek", thinkingCanDisable: false, contextWindow: 96000, maxOutput: 32000 },
@@ -246,6 +251,7 @@ export const PROVIDER_CAPABILITIES = {
   "ark-ap": {
     "glm-5.2":            { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 128000 },
     "glm-5.3":            { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 128000 },
+    "glm-5.3-flash":      { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 128000 },
     "kimi-k2.7-code":     { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 256000, maxOutput: 65536 },
     "kimi-k3":            { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 128000 },
     "deepseek-v4-pro":    { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 384000 },
@@ -262,6 +268,7 @@ export const PROVIDER_CAPABILITIES = {
   "volcengine-ark": {
     "glm-5.2":            { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 128000 },
     "glm-5.3":            { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 128000 },
+    "glm-5.3-flash":      { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 128000 },
     "kimi-k2.7-code":     { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 256000, maxOutput: 65536 },
     "kimi-k3":            { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 128000 },
     "deepseek-v4-pro":    { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 384000 },
@@ -340,6 +347,8 @@ export const PATTERN_CAPABILITIES = [
   // ── Qwen (3.5+ = native vision/video; coder & max = text-only; QwQ = thinking-only) ─
   { pattern: "*qwen*vl*",       caps: { vision: true, reasoning: true, thinkingFormat: "qwen", contextWindow: 262144 } },
   { pattern: "*qwen*omni*",     caps: { vision: true, audioInput: true, videoInput: true, reasoning: true, thinkingFormat: "qwen", contextWindow: 262144, maxOutput: 65536 } },
+  // qwen3.8-max adds vision (unlike the text-only qwen3.7-max) — must precede *qwen*max*.
+  { pattern: "*qwen3.8*",       caps: { vision: true, videoInput: true, reasoning: true, thinkingFormat: "qwen", contextWindow: 1000000, maxOutput: 65536 } },
   { pattern: "*qwen*coder*",    caps: { reasoning: true, thinkingFormat: "qwen", contextWindow: 1000000 } },
   { pattern: "*qwen*max*",      caps: { reasoning: true, thinkingFormat: "qwen", contextWindow: 1000000, maxOutput: 65536 } },
   { pattern: "*qwen3.5*",       caps: { vision: true, videoInput: true, reasoning: true, thinkingFormat: "qwen", contextWindow: 1000000, maxOutput: 65536 } },

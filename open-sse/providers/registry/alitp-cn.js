@@ -38,29 +38,23 @@ export default {
     },
   ],
   models: [
-    // 千问 — 文本/视觉推理
+    // 千问 — 推理/视觉理解/文本生成
     { id: "qwen3.8-max", name: "Qwen3.8 Max" },
+    { id: "qwen3.8-plus", name: "Qwen3.8 Plus" },
+    { id: "qwen3.8-flash", name: "Qwen3.8 Flash" },
     { id: "qwen3.7-max", name: "Qwen3.7 Max" },
     { id: "qwen3.7-plus", name: "Qwen3.7 Plus" },
     { id: "qwen3.6-flash", name: "Qwen3.6 Flash" },
-    // DeepSeek — 文本推理
+    // DeepSeek — 推理/文本生成
     { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro" },
     { id: "deepseek-v4-pro-0813", name: "DeepSeek V4 Pro 0813" },
     { id: "deepseek-v4-flash-0731", name: "DeepSeek V4 Flash 0731" },
-    // 智谱 AI — 文本推理
+    // 智谱 AI — 推理/文本生成
     { id: "glm-5.2", name: "GLM 5.2" },
-    // 千问 — 图片生成
-    { id: "qwen-image-3.0-pro", name: "Qwen Image 3.0 Pro", type: "image" },
-    // 万相 — 图片生成
-    { id: "wan2.7-image", name: "Wan2.7 Image", type: "image" },
-    { id: "wan2.7-image-pro", name: "Wan2.7 Image Pro", type: "image" },
-    // 千问 — 语音
-    { id: "qwen-audio-3.0-tts-plus", name: "Qwen Audio TTS Plus", type: "tts" },
-    { id: "qwen-audio-3.0-realtime-plus", name: "Qwen Audio Realtime Plus" },
-    { id: "qwen-audio-3.0-asr-flash", name: "Qwen Audio ASR Flash", type: "stt" },
-    // HappyHorse — 视频生成
-    { id: "happyhorse-1.1-i2v", name: "HappyHorse 1.1 I2V", type: "video" },
-    { id: "happyhorse-1.1-t2v", name: "HappyHorse 1.1 T2V", type: "video" },
-    { id: "happyhorse-1.1-r2v", name: "HappyHorse 1.1 R2V", type: "video" },
+    // 图片生成
+    { id: "qwen-image-3.0-pro", name: "Qwen Image 3.0 Pro", kind: "image", params: ["n", "size", "quality", "response_format"] },
+    { id: "wan2.7-image", name: "WAN Image 2.7", kind: "image", params: ["n", "size", "quality", "response_format"] },
+    { id: "wan2.7-image-pro", name: "WAN Image 2.7 Pro", kind: "image", params: ["n", "size", "quality", "response_format"] },
+
   ],
 };

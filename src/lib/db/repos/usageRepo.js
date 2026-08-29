@@ -739,20 +739,12 @@ function formatLogDate(date = new Date()) {
 // No-op: request log is now derived from usageHistory table on read.
 export async function appendRequestLog() {}
 
-// Aggregate per-session (or per-connection) token/cost usage.
-//
-// groupBy:
-//   - "session" (default): group by the conversation-stable id resolved by
-//     open-sse's sessionManager (Claude Code session, Antigravity conversation,
-//     Kiro thread, etc.). NOTE: some subagent tools (e.g. zcode on the Claude
-//     protocol) mint a NEW `claude:_session_<uuid>` per request, so each logical
-//     conversation splinters into many one-shot "sessions". The connection view
-//     below collapses those fragments back together.
-//   - "connection": group by connectionId instead. Use this to see token spend
-//     per account/connection without the per-request session fragmentation.
-//
-// Rows without a sessionId (legacy records or clients that don't carry one) are
-// grouped under a single null bucket and surfaced as "unclassified".
+// Aggregate per-session token/cost usage. A "session" is the conversation-stable
+// id resolved by open-sse's sessionManager (Claude Code session, Antigravity
+// conversation, Kiro thread, zcode main/subagent sessions, etc.). Each distinct
+// sessionId is its own group — including zcode subagents, which carry their own
+// session id. Rows without a sessionId (legacy records or clients that don't
+// carry one) are grouped under a single null bucket and surfaced as "unclassified".
 export async function getSessionStats(filter = {}) {
   try {
     const db = await getAdapter();
@@ -764,17 +756,10 @@ export async function getSessionStats(filter = {}) {
     if (filter.connectionId) { conds.push("connectionId = ?"); params.push(filter.connectionId); }
 
     const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
-    // viewMode is the user-facing grouping mode ("session" | "connection");
-    // groupCol is the actual SQL column used for GROUP BY. Keep them separate so
-    // the "is this the connection view?" checks below compare against the mode,
-    // not the column name.
-    const viewMode = filter.groupBy === "connection" ? "connection" : "session";
-    // Identity key used both for the SQL GROUP BY and the in-JS cache accumulation.
-    const keyExpr = viewMode === "connection" ? "COALESCE(connectionId, '')" : "COALESCE(sessionId, '')";
 
     const rows = db.all(
       `SELECT
-         ${keyExpr} AS grpKey,
+         COALESCE(sessionId, '') AS grpKey,
          COUNT(*) AS requests,
          SUM(promptTokens) AS promptTokens,
          SUM(completionTokens) AS completionTokens,
@@ -786,7 +771,7 @@ export async function getSessionStats(filter = {}) {
          MAX(connectionId) AS connectionId,
          MAX(sessionId) AS sessionId
        FROM usageHistory ${where}
-       GROUP BY ${keyExpr}
+       GROUP BY COALESCE(sessionId, '')
        ORDER BY lastSeen DESC`,
       params
     );
@@ -795,7 +780,7 @@ export async function getSessionStats(filter = {}) {
     // SUM across engines (json_extract availability varies). Pull the raw tokens
     // and accumulate cached/cache-creation in JS, keyed by the same group key.
     const tokenRows = db.all(
-      `SELECT ${keyExpr} AS grpKey, tokens FROM usageHistory ${where}`,
+      `SELECT COALESCE(sessionId, '') AS grpKey, tokens FROM usageHistory ${where}`,
       params
     );
     const cacheByGroup = {};
@@ -811,12 +796,9 @@ export async function getSessionStats(filter = {}) {
 
     const sessions = rows.map((r) => {
       const cache = cacheByGroup[r.grpKey] || { cachedTokens: 0, cacheCreationTokens: 0 };
-      const isConnectionView = viewMode === "connection";
       return {
-        // In connection view the natural identity is connectionId; in session view it's sessionId.
-        sessionId: isConnectionView ? (r.connectionId || null) : (r.sessionId || null),
+        sessionId: r.sessionId || null,
         connectionId: r.connectionId || null,
-        groupBy: viewMode,
         requests: r.requests || 0,
         promptTokens: r.promptTokens || 0,
         completionTokens: r.completionTokens || 0,
@@ -843,15 +825,14 @@ export async function getSessionStats(filter = {}) {
       { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cacheCreationTokens: 0, cost: 0 }
     );
 
-    // "unclassified" only applies to the session view (rows with NULL sessionId).
-    const unclassifiedCount = viewMode === "session"
-      ? sessions.filter((s) => s.sessionId === null).length
-      : 0;
+    // "unclassified" = the single bucket where sessionId is NULL (all such
+    // rows collapse into one group via COALESCE).
+    const unclassifiedCount = sessions.filter((s) => s.sessionId === null).length;
 
-    return { sessions, total, unclassifiedCount, groupBy: viewMode };
+    return { sessions, total, unclassifiedCount };
   } catch (e) {
     console.error("[usageRepo] getSessionStats failed:", e.message);
-    return { sessions: [], total: { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cacheCreationTokens: 0, cost: 0 }, unclassifiedCount: 0, groupBy: filter.groupBy || "session" };
+    return { sessions: [], total: { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cacheCreationTokens: 0, cost: 0 }, unclassifiedCount: 0 };
   }
 }
 

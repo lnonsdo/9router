@@ -45,6 +45,8 @@ export default {
     },
   },
   models: [
+    { id: "glm-5.3", name: "GLM-5.3" },
+    { id: "glm-5.3-flash", name: "GLM-5.3-Flash" },
     { id: "glm-5.2", name: "GLM-5.2" },
     { id: "glm-5.1", name: "GLM-5.1" },
     { id: "glm-5.0-turbo", name: "GLM-5.0-Turbo" },
@@ -68,7 +70,6 @@ export default {
     { id: "kimi-k3-1", name: "Kimi-K3" },
     { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" },
     { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash" },
-    { id: "deepseek-v3-2-volc", name: "DeepSeek-V3.2" },
   ],
   oauth: {
     baseUrl: "https://copilot.tencent.com",
