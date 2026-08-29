@@ -128,6 +128,7 @@ import p122 from "./xquik.js";
 // local custom providers
 import p123 from "./ark-ap-provider.js";
 import p124 from "./volcengine-sso.js";
+import p125 from "./alitp-cn.js";
 export default [
   p0,
   p1,
@@ -256,4 +257,5 @@ export default [
   // local custom providers
   p123,
   p124,
+  p125,
 ];
