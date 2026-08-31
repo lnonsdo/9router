@@ -48,6 +48,7 @@ export default {
     { id: "doubao-seed-2.1-pro", name: "Doubao Seed 2.1 Pro" },
     { id: "doubao-seed-2.0-lite", name: "Doubao Seed 2.0 Lite" },
     { id: "doubao-seed-2.0-mini", name: "Doubao Seed 2.0 Mini" },
+    { id: "doubao-seed-evolving", name: "Doubao Seed 2.0 Evolving" },
     { id: "glm-5.2", name: "GLM-5.2" },
     { id: "glm-5.3", name: "GLM-5.3" },
     { id: "glm-5.3-flash", name: "GLM-5.3 Flash" },
