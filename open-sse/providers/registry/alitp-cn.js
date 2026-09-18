@@ -49,6 +49,7 @@ export default {
     { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro" },
     { id: "deepseek-v4-pro-0813", name: "DeepSeek V4 Pro 0813" },
     { id: "deepseek-v4-flash-0731", name: "DeepSeek V4 Flash 0731" },
+    { id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash" },
     // 智谱 AI — 推理/文本生成
     { id: "glm-5.2", name: "GLM 5.2" },
     // 图片生成
