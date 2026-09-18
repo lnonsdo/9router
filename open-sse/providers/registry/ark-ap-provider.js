@@ -56,6 +56,7 @@ export default {
     { id: "kimi-k3", name: "Kimi K3" },
     { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro" },
     { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" },
+    { id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash" },
     { id: "minimax-m3", name: "MiniMax M3" },
     { id: "doubao-embedding-vision", name: "Doubao Embedding Vision", kind: "embedding" },
     { id: "doubao-seedream-5.0-lite", name: "Doubao Seedream 5.0 Lite", kind: "image", params: ["n", "size", "quality", "response_format"] },
