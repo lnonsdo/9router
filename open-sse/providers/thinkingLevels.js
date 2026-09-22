@@ -14,9 +14,7 @@ const L = {
   budgetX: ["none", "low", "medium", "high", "xhigh", "max"],       // claude-budget, claude-adaptive
   gemini: ["minimal", "low", "medium", "high"],                     // gemini-3 thinkingLevel (no disable)
   hiMax: ["none", "high", "max"],                                   // deepseek (low/med→high, xhigh→max)
-  ark: ["none", "minimal", "low", "medium", "high"],                // Ark baseline enum
-  arkMax: ["none", "minimal", "low", "medium", "high", "max"],      // + max: deepseek-v4-* on Ark
-  arkFull: ["none", "minimal", "low", "medium", "high", "xhigh", "max"], // glm-5-2-260617 only
+  ark: ["none", "minimal", "low", "medium", "high", "xhigh", "max"], // ark supported levels, the provider will auto clamp to these
 };
 
 // thinkingFormat → valid selectable levels (source of truth for UI options).
