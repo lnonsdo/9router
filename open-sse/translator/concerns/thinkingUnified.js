@@ -250,7 +250,7 @@ function toArkEffort(level, supportedLevels, isResponses) {
 }
 
 // Apply unified thinking config to body in the resolved provider-native format.
-function applyFormat(fmt, body, cfg, caps, supportedLevels, display) {
+function applyFormat(fmt, body, cfg, caps, supportedLevels, display, targetFormat) {
   const none = cfg.mode === "none";
   const canDisable = caps.thinkingCanDisable !== false;
   // Model cannot disable thinking → clamp "none" to minimal effort instead.
@@ -330,7 +330,7 @@ function applyFormat(fmt, body, cfg, caps, supportedLevels, display) {
       // /v1/messages is Anthropic-compatible, so it takes Anthropic's
       // thinking:{type,budget_tokens} and does NOT understand reasoning_effort.
       if (targetFormat === "claude") {
-        applyFormat("claude-budget", body, cfg, caps, supportedLevels, targetFormat);
+        applyFormat("claude-budget", body, cfg, caps, supportedLevels, display, targetFormat);
         break;
       }
       // Chat (/v3/chat/completions) and Responses (/v3/responses) use Ark's own
@@ -428,6 +428,6 @@ export function applyThinking(targetFormat, model, body, provider = null, intent
   // comes back at all; keep what the client asked for instead of resetting it.
   const display = typeof body.thinking?.display === "string" ? body.thinking.display : undefined;
   stripAll(body);
-  applyFormat(fmt, body, cfg, caps, supportedLevels, display);
+  applyFormat(fmt, body, cfg, caps, supportedLevels, display, targetFormat);
   return body;
 }
