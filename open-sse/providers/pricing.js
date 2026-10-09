@@ -191,6 +191,7 @@ export const MODEL_PRICING = {
   "doubao-seed-evolving":        { input: 0.9,  output: 4.50,  cached: 0.18,  reasoning: 0.00,  cache_creation: 0.00  },
   "doubao-seed-2.1-pro":        { input: 0.9,  output: 4.50,  cached: 0.18,  reasoning: 0.00,  cache_creation: 0.00  },
   "doubao-seed-2.1-turbo":        { input: 0.45,  output: 2.25,  cached: 0.09,  reasoning: 0.00,  cache_creation: 0.00  },
+  "doubao-seed-2.1-lite":        { input: 0.45,  output: 2.25,  cached: 0.09,  reasoning: 0.00,  cache_creation: 0.00  },
 };
 
 /**

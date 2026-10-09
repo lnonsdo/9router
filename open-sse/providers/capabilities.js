@@ -369,8 +369,7 @@ export const PROVIDER_CAPABILITIES = {
     "ark-code-latest":      { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 128000 },
     "doubao-seed-evolving": { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 256000 },
     "doubao-seed-2.1-pro":  { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 256000, maxOutput: 256000 },
-    "doubao-seed-2.1-turbo":{ vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 256000, maxOutput: 256000 },
-    "doubao-seed-2.0-lite": { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 256000, maxOutput: 128000 },
+    "doubao-seed-2.1-lite": { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 256000, maxOutput: 128000 },
     "doubao-seed-2.0-mini": { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 256000, maxOutput: 128000 },
   },
   // Volcengine Ark (Coding Plan) — same endpoints/enum as "ark-ap".
@@ -384,9 +383,9 @@ export const PROVIDER_CAPABILITIES = {
     "deepseek-v4-flash":  { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 384000 },
     "minimax-m3":         { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 512000 },
     "ark-code-latest":      { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 128000 },
+    "doubao-seed-evolving": { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 256000 },
     "doubao-seed-2.1-pro":  { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 256000, maxOutput: 256000 },
-    "doubao-seed-2.1-turbo":{ vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 256000, maxOutput: 256000 },
-    "doubao-seed-2.0-lite": { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 256000, maxOutput: 128000 },
+    "doubao-seed-2.1-lite": { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 256000, maxOutput: 128000 },
     "doubao-seed-2.0-mini": { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 256000, maxOutput: 128000 },
   },
 };
