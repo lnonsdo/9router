@@ -45,11 +45,9 @@ export default {
   models: [
     { id: "ark-code-latest", name: "Ark Code (Latest)" },
     { id: "doubao-seed-evolving", name: "Doubao Seed Evolving" },
-    { id: "doubao-seed-2.1-turbo", name: "Doubao Seed 2.1 Turbo" },
     { id: "doubao-seed-2.1-pro", name: "Doubao Seed 2.1 Pro" },
-    { id: "doubao-seed-2.0-lite", name: "Doubao Seed 2.0 Lite" },
+    { id: "doubao-seed-2.1-lite", name: "Doubao Seed 2.0 Lite" },
     { id: "doubao-seed-2.0-mini", name: "Doubao Seed 2.0 Mini" },
-    { id: "glm-5.2", name: "GLM-5.2" },
     { id: "glm-5.3", name: "GLM-5.3" },
     { id: "glm-5.3-flash", name: "GLM-5.3 Flash" },
     { id: "kimi-k2.7-code", name: "Kimi K2.7 Code" },

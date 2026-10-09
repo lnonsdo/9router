@@ -7,7 +7,7 @@ import { DATA_DIR } from "@/lib/dataDir";
 import { getSettings } from "@/lib/localDb";
 
 const DEFAULT_PASSWORD = "123456";
-const SESSION_MAX_AGE_SEC = 24 * 60 * 60;
+const SESSION_MAX_AGE_SEC = 24 * 60 * 60 * 7;
 
 function loadJwtSecret() {
   if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
