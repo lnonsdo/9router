@@ -38,6 +38,10 @@ export const QODER_CONFIG = { ...PROVIDER_OAUTH["qoder"] };
 // Qoder CN (qoder.com.cn) — same device flow as intl Qoder, CN endpoints.
 export const QODER_CN_CONFIG = { ...PROVIDER_OAUTH["qoder-cn"] };
 
+// Open Design (AMR) — device-authorization login that mints a runtime key plus a
+// console control key. Endpoints live in the registry oauth block.
+export const OPEN_DESIGN_CONFIG = { ...PROVIDER_OAUTH["open-design"] };
+
 // iFlow OAuth Configuration (Authorization Code)
 export const IFLOW_CONFIG = { ...PROVIDER_OAUTH["iflow"] };
 

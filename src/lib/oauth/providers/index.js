@@ -33,6 +33,7 @@ import minimaxCode from "./minimax-code.js";
 import minimaxCodeGlobal from "./minimax-code-global.js";
 import nous from "./nous.js";
 import volcengineSso from "./volcengine-sso.js";
+import openDesign from "./open-design.js";
 
 // Provider configurations
 const PROVIDERS = {
@@ -65,6 +66,7 @@ const PROVIDERS = {
   "minimax-code-global": minimaxCodeGlobal,
   nous,
   "volcengine-sso": volcengineSso,
+  "open-design": openDesign,
 };
 
 export { PROVIDERS };

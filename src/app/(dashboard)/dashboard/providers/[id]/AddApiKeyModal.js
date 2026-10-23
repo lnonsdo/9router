@@ -45,6 +45,9 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
     organization: "",
   });
   const [cloudflareData, setCloudflareData] = useState({ accountId: "" });
+  // Open Design: the console session cookie unlocks balance / plan-usage rows on
+  // the /quota page (the sk-amr-… key itself is inference-only).
+  const [openDesignData, setOpenDesignData] = useState({ sessionCookie: "", workspaceId: "" });
   const [bedrockData, setBedrockData] = useState({
     profile: "",
     region: "",
@@ -79,6 +82,12 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
     }
     if (isCloudflareAi) {
       return { accountId: cloudflareData.accountId };
+    }
+    if (provider === "open-design") {
+      const data = {};
+      if (openDesignData.sessionCookie.trim()) data.amrSessionCookie = openDesignData.sessionCookie.trim();
+      if (openDesignData.workspaceId.trim()) data.amrWorkspaceId = openDesignData.workspaceId.trim();
+      return Object.keys(data).length ? data : undefined;
     }
     if (usesAwsCredentialForm) {
       // Only send what the user filled in: an empty `profile` would otherwise select profile
@@ -366,6 +375,31 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
             />
             <p className="text-xs text-text-muted mt-2">
               Find your Account ID in the right sidebar of <a href="https://dash.cloudflare.com" target="_blank" rel="noopener noreferrer" className="text-primary underline">dash.cloudflare.com</a>
+            </p>
+          </div>
+        )}
+        {provider === "open-design" && (
+          <div className="bg-sidebar/50 p-4 rounded-lg border border-accent/20">
+            <h3 className="font-semibold mb-3 text-sm">Open Design 控制台（可选）</h3>
+            <div className="flex flex-col gap-3">
+              <Input
+                label="Console session cookie"
+                type="password"
+                value={openDesignData.sessionCookie}
+                onChange={(e) => setOpenDesignData({ ...openDesignData, sessionCookie: e.target.value })}
+                placeholder="__Secure-better-auth.session_token=..."
+              />
+              <Input
+                label="Workspace ID (optional)"
+                value={openDesignData.workspaceId}
+                onChange={(e) => setOpenDesignData({ ...openDesignData, workspaceId: e.target.value })}
+                placeholder="留空自动从会话读取"
+              />
+            </div>
+            <p className="text-xs text-text-muted mt-2">
+              sk-amr Key 仅用于推理，读不到余额和套餐额度。想在这里看到额度，请打开
+              <a href="https://open-design.ai/cloud/dashboard" target="_blank" rel="noopener noreferrer" className="text-primary underline"> 控制台 </a>
+              并在 DevTools 中复制 <code>__Secure-better-auth.session_token</code> 粘贴到上方。
             </p>
           </div>
         )}

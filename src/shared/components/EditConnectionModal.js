@@ -22,6 +22,8 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
     organization: "",
   });
   const [cloudflareData, setCloudflareData] = useState({ accountId: "" });
+  // Open Design: console session cookie powers balance / plan usage on /quota.
+  const [openDesignData, setOpenDesignData] = useState({ sessionCookie: "", workspaceId: "" });
   const [awsData, setAwsData] = useState({ profile: "", region: "", accessKeyId: "", sessionToken: "" });
   const [clearAwsSessionToken, setClearAwsSessionToken] = useState(false);
   // Volcengine SSO: long-lived IAM AK/SK binding (removes 2-day re-auth pain)
@@ -51,6 +53,11 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
       }
       if (connection.provider === "cloudflare-ai" && connection.providerSpecificData) {
         setCloudflareData({ accountId: connection.providerSpecificData.accountId || "" });
+      }
+      if (connection.provider === "open-design") {
+        const psd = connection.providerSpecificData || {};
+        // The cookie is a secret — never prefill it; blank keeps the saved value.
+        setOpenDesignData({ sessionCookie: "", workspaceId: psd.amrWorkspaceId || "" });
       }
       if (AI_PROVIDERS?.[connection.provider]?.credentialForm === "aws") {
         const psd = connection.providerSpecificData || {};
@@ -200,6 +207,20 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
       if (isCloudflareAi) {
         updates.providerSpecificData = { accountId: cloudflareData.accountId };
       }
+      if (connection.provider === "open-design") {
+        const cookie = openDesignData.sessionCookie.trim();
+        const workspaceId = openDesignData.workspaceId.trim();
+        const hadWorkspaceId = !!connection.providerSpecificData?.amrWorkspaceId;
+        // Only send what the user filled in: the stored cookie is never shown
+        // back, so a blank field must keep it. A cleared workspace id is sent as
+        // null (the server merges) so the usage lookup falls back to
+        // /workspaces/current instead of keeping a stale id.
+        const data = {};
+        if (cookie) data.amrSessionCookie = cookie;
+        if (workspaceId) data.amrWorkspaceId = workspaceId;
+        else if (hadWorkspaceId) data.amrWorkspaceId = null;
+        if (Object.keys(data).length) updates.providerSpecificData = data;
+      }
       if (usesAwsCredentialForm) {
         updates.providerSpecificData = buildAwsSpecificData();
       }
@@ -272,6 +293,32 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
               </Badge>
             )}
           </>
+        )}
+
+        {connection.provider === "open-design" && (
+          <div className="flex flex-col gap-3 rounded-lg border border-black/10 p-3 dark:border-white/10">
+            <p className="text-xs text-text-muted">
+              余额与套餐额度只能通过控制台会话读取（API Key 仅用于推理）。在
+              <a href="https://open-design.ai/cloud/dashboard" target="_blank" rel="noreferrer" className="text-primary hover:underline">
+                控制台
+              </a>
+              的 DevTools 中复制 <code>__Secure-better-auth.session_token</code> 粘贴到下方，即可在 Quota 页显示余额与每周额度。
+            </p>
+            <Input
+              label="Console session cookie"
+              type="password"
+              value={openDesignData.sessionCookie}
+              onChange={(e) => setOpenDesignData({ ...openDesignData, sessionCookie: e.target.value })}
+              placeholder="__Secure-better-auth.session_token=..."
+            />
+            <p className="text-[10px] text-text-muted">留空则保留当前已保存的 Cookie；Cookie 过期后需重新粘贴。</p>
+            <Input
+              label="Workspace ID (optional)"
+              value={openDesignData.workspaceId}
+              onChange={(e) => setOpenDesignData({ ...openDesignData, workspaceId: e.target.value })}
+              placeholder="留空自动从会话读取"
+            />
+          </div>
         )}
 
         {connection.provider === "volcengine-sso" && (

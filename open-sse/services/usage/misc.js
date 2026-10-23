@@ -3,6 +3,7 @@
  */
 
 import { proxyAwareFetch } from "../../utils/proxyFetch.js";
+import { PROVIDER_OAUTH } from "../../providers/index.js";
 import { U } from "./shared.js";
 
 export { getGlmUsage } from "./glm.js";
@@ -395,5 +396,158 @@ export async function getQoderUsage(accessToken, proxyOptions = null, providerId
     };
   } catch (error) {
     return { message: `Qoder connected. Unable to fetch usage: ${error.message}` };
+  }
+}
+
+// Open Design (AMR) console — the runtime API key (sk-amr-…) is inference-only:
+// every /api/v1 wallet and billing route answers 401 for it (probed: Bearer,
+// x-api-key, x-amr-api-key, query param, all 401). Two console credentials do
+// work, in order of preference:
+//   • providerSpecificData.amrControlKey — minted by the browser device login
+//     (same flow as `vela login`); sent as `Authorization: Bearer`.
+//   • providerSpecificData.amrSessionCookie — the console's
+//     `__Secure-better-auth.session_token` replayed as a Cookie header.
+// Routes:
+//   GET /workspaces/current                          → workspaceId + tier
+//   GET /workspaces/{id}/billing/coding-plan-usage   → credits windows
+//   GET /workspaces/{id}/wallet/balance              → balanceUsd + expiresAt
+//   GET /wallet/balance                              → legacy fallback (control key)
+const OPEN_DESIGN_API = PROVIDER_OAUTH["open-design"]?.apiBaseUrl || "https://amr-api.open-design.ai/api/v1";
+const OPEN_DESIGN_SESSION_COOKIE = "__Secure-better-auth.session_token";
+
+const OPEN_DESIGN_WINDOW_LABELS = {
+  18000: "Session (5h)",
+  86400: "Daily",
+  604800: "Weekly (7d)",
+  2592000: "Monthly",
+};
+
+function openDesignCookie(raw) {
+  const value = typeof raw === "string" ? raw.trim() : "";
+  if (!value) return null;
+  // Accept either the full `name=value` pair or just the value pasted from the
+  // DevTools cookie table.
+  return value.includes("=") ? value : `${OPEN_DESIGN_SESSION_COOKIE}=${value}`;
+}
+
+export async function getOpenDesignUsage(providerSpecificData, proxyOptions = null) {
+  const controlKey = typeof providerSpecificData?.amrControlKey === "string"
+    ? providerSpecificData.amrControlKey.trim()
+    : "";
+  const cookie = openDesignCookie(providerSpecificData?.amrSessionCookie);
+  if (!controlKey && !cookie) {
+    return {
+      message: "Open Design usage needs a browser login (or the console session cookie) — reconnect the account.",
+    };
+  }
+
+  const headers = controlKey
+    ? { Authorization: `Bearer ${controlKey}`, Accept: "application/json" }
+    : { Cookie: cookie, Accept: "application/json" };
+  const get = async (path) => {
+    const response = await proxyAwareFetch(`${OPEN_DESIGN_API}${path}`, { method: "GET", headers }, proxyOptions);
+    if (response.status === 401 || response.status === 403) return { unauthorized: true };
+    if (!response.ok) return { error: `${path} returned ${response.status}` };
+    return { body: await response.json().catch(() => null) };
+  };
+
+  try {
+    let workspaceId = typeof providerSpecificData?.amrWorkspaceId === "string"
+      ? providerSpecificData.amrWorkspaceId.trim()
+      : "";
+    let tier = "";
+
+    const current = await get("/workspaces/current");
+    if (current.unauthorized) {
+      return {
+        message: controlKey
+          ? "Open Design control key rejected — sign in again from the provider page."
+          : "Open Design session cookie expired or invalid — copy a fresh one from the console.",
+      };
+    }
+    if (current.body) {
+      workspaceId = workspaceId || current.body.workspaceId || current.body.activeWorkspaceId || "";
+      tier = current.body.personalMembershipTier || current.body.planId || "";
+    }
+    if (!workspaceId) {
+      // Control-plane keys are workspace-scoped; when /workspaces/current is not
+      // exposed to them the workspace list still is.
+      const list = await get("/workspaces");
+      const items = Array.isArray(list.body?.items) ? list.body.items : [];
+      const first = items.find((w) => typeof w?.workspaceId === "string") || items[0];
+      workspaceId = typeof first?.workspaceId === "string" ? first.workspaceId : "";
+    }
+    if (!workspaceId) {
+      return { message: "Open Design workspace not found for this account." };
+    }
+
+    const usagePath = `/workspaces/${encodeURIComponent(workspaceId)}/billing/coding-plan-usage`;
+    // Console sessions can read coding-plan-usage directly; the control key that
+    // the device login issues is rejected there (401) and must go through
+    // billing/preflight instead (same numbers, plus balance and funding).
+    const preflightPath = `/workspaces/${encodeURIComponent(workspaceId)}/billing/preflight`;
+    const [usage, preflight, wallet, legacyWallet] = await Promise.all([
+      get(usagePath),
+      get(preflightPath),
+      get(`/workspaces/${encodeURIComponent(workspaceId)}/wallet/balance`),
+      // The daemon reads the control-plane's legacy wallet route with the same
+      // bearer control key, so keep it as a fallback when the workspace-scoped
+      // route is not exposed to this credential.
+      get("/wallet/balance"),
+    ]);
+    const planBody = Array.isArray(usage.body?.windows) && usage.body.windows.length > 0
+      ? usage.body
+      : preflight.body?.codingPlan || {};
+    const balanceBody = wallet.body?.balanceUsd !== undefined
+      ? wallet.body
+      : legacyWallet.body?.balanceUsd !== undefined
+        ? legacyWallet.body
+        : preflight.body
+          ? { balanceUsd: preflight.body.balanceUsd, expiresAt: wallet.body?.expiresAt || null }
+          : null;
+    tier = tier
+      || (typeof planBody.tier === "string" ? planBody.tier : "")
+      || (typeof preflight.body?.tier === "string" ? preflight.body.tier : "");
+
+    const quotas = {};
+
+    for (const window of planBody.windows || []) {
+      const total = Number(window.limitCredits);
+      const used = Number(window.usedCredits);
+      if (!Number.isFinite(total) || total <= 0) continue;
+      const seconds = Number(window.durationSeconds);
+      const name = OPEN_DESIGN_WINDOW_LABELS[seconds] || `${Math.round(seconds / 86400)}d window`;
+      quotas[name] = {
+        used: Number.isFinite(used) ? used : 0,
+        total,
+        remainingPercentage: Math.max(0, Math.min(100, ((total - (used || 0)) / total) * 100)),
+        resetAt: window.resetsAt || null,
+        unit: "credits",
+      };
+    }
+
+    const balance = Number(balanceBody?.balanceUsd);
+    if (balanceBody && Number.isFinite(balance)) {
+      quotas["Wallet balance"] = {
+        used: 0,
+        total: balance,
+        remainingPercentage: 100,
+        resetAt: balanceBody.expiresAt || null,
+        isCreditBalance: true,
+        currency: "USD",
+      };
+    }
+
+    if (Object.keys(quotas).length === 0) {
+      const reason = usage.error || preflight.error || wallet.error || legacyWallet.error || "no usage data reported";
+      return { message: `Open Design connected. ${reason}.` };
+    }
+
+    return {
+      plan: tier ? tier.charAt(0).toUpperCase() + tier.slice(1) : "Open Design",
+      quotas,
+    };
+  } catch (error) {
+    return { message: `Open Design usage error: ${error.message}` };
   }
 }

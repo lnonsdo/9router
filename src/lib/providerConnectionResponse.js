@@ -6,11 +6,18 @@ export function usesAwsCredentialForm(provider) {
 
 export function toProviderConnectionResponse(connection) {
   const { apiKey, accessToken, refreshToken, idToken, ...safe } = connection;
+  if (!connection.providerSpecificData) return safe;
 
-  if (!usesAwsCredentialForm(connection.provider) || !connection.providerSpecificData) {
-    return safe;
-  }
+  // Credentials stored inside providerSpecificData never round-trip to the
+  // browser: the edit form only writes them, it never reads them back.
+  const secretFields = usesAwsCredentialForm(connection.provider)
+    ? ["sessionToken"]
+    : connection.provider === "open-design"
+      ? ["amrSessionCookie", "amrControlKey"]
+      : [];
+  if (secretFields.length === 0) return safe;
 
-  const { sessionToken, ...providerSpecificData } = connection.providerSpecificData;
+  const providerSpecificData = { ...connection.providerSpecificData };
+  for (const field of secretFields) delete providerSpecificData[field];
   return { ...safe, providerSpecificData };
 }

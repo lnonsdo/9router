@@ -782,6 +782,25 @@ export function parseQuotaData(provider, data) {
         }
         break;
 
+      case "open-design":
+        // Console-session data: Coding Plan credits windows plus a USD wallet
+        // balance (isCreditBalance → 💰 row). remainingPercentage is forwarded
+        // because the balance row's used/total would compute the wrong direction.
+        if (data.quotas) {
+          Object.entries(data.quotas).forEach(([name, quota]) => {
+            normalizedQuotas.push({
+              name,
+              used: quota.used || 0,
+              total: quota.total || 0,
+              resetAt: quota.resetAt || null,
+              remainingPercentage: quota.remainingPercentage,
+              isCreditBalance: quota.isCreditBalance,
+              currency: quota.currency,
+            });
+          });
+        }
+        break;
+
       case "minimax-code":
       case "minimax-code-global":
         // Service already returns dashboard-shaped rows: a credits balance

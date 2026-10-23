@@ -269,6 +269,9 @@ export async function GET(request, { params }) {
         "glm",
         "nous",
         "volcengine-sso",
+        // Open Design device login: no PKCE, the device secret rides along as
+        // codeVerifier and is forwarded to pollToken() by the poll branch.
+        "open-design",
       ];
       let deviceData;
       if (noPkceDeviceProviders.includes(provider)) {

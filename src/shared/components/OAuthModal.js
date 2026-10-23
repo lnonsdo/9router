@@ -300,6 +300,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         "minimax-code-global",
         "nous",
         "volcengine-sso",
+        "open-design",
       ];
       if (deviceCodeProviders.includes(provider)) {
         setIsDeviceCode(true);

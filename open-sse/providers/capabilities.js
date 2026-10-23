@@ -453,6 +453,19 @@ export const PROVIDER_CAPABILITIES = {
     "doubao-seed-2.1-lite": { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 256000, maxOutput: 128000 },
     "doubao-seed-2.0-mini": { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 256000, maxOutput: 128000 },
   },
+  // Open Design (AMR Link) — values from GET /v1/models metadata; the gateway is
+  // OpenAI-shaped for chat/responses and accepts native Claude shapes on
+  // /v1/messages, so reasoning stays on the openai effort lane.
+  "opendesign": {
+    // Hunyuan H4 Preview has no global pattern (hy4*) and reasons on every call.
+    "hy4-preview":          { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1048000, maxOutput: 32000 },
+    // Image generation lives on /v1/images/generations — no chat/tool surface.
+    "seedream-5.0":         { vision: true, imageOutput: true, tools: false },
+    "seedream-5.0-pro":     { vision: true, imageOutput: true, tools: false },
+    "nano-banana-2":        { vision: true, imageOutput: true, tools: false },
+    "nano-banana-2-lite":   { vision: true, imageOutput: true, tools: false },
+    "gpt-image-2":          { vision: true, imageOutput: true, tools: false },
+  },
 };
 
 // Qoder model capability table. The model ids are opaque (`dmodel`, `kmodel`,

@@ -29,6 +29,7 @@ import {
   getOllamaUsage,
   getVercelAiGatewayUsage,
   getQoderUsage,
+  getOpenDesignUsage,
 } from "./usage/misc.js";
 import { getVolcengineArkUsage } from "./usage/volcengine-ark.js";
 
@@ -71,6 +72,8 @@ const USAGE_HANDLERS = {
   commandcode: (c) => getCommandCodeUsage(c.apiKey, c.proxyOptions),
   cursor: (c) => getCursorUsage(c.accessToken, c.providerSpecificData, c.proxyOptions),
   "volcengine-sso": (c) => getVolcengineArkUsage(c, c.providerSpecificData, c.proxyOptions),
+  // Console-session based: the runtime API key cannot read AMR wallet/plan data.
+  "open-design": (c) => getOpenDesignUsage(c.providerSpecificData, c.proxyOptions),
 };
 
 // Qoder intl/CN share one usage path: PATs must be exchanged to a job token
