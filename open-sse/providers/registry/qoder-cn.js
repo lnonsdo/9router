@@ -2,6 +2,9 @@ export default {
   id: "qoder-cn",
   priority: 30,
   alias: "qdcn",
+  aliases: [
+    "qdcn",
+  ],
   uiAlias: "qdcn",
   display: {
     name: "Qoder CN",

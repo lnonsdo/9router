@@ -217,8 +217,8 @@ export const MODEL_CAPABILITIES = {
   // Volcengine Ark (Agent/Coding Plan) — global (provider-agnostic) entries so
   // they resolve regardless of provider arg. thinkingFormat omitted: Ark is
   // dual openai/anthropic, resolveFormat derives it per target protocol.
-  "ark-code-latest":        { vision: true, reasoning: true, contextWindow: 256000, maxOutput: 128000 },
-  "doubao-seed-evolving":   { vision: true, reasoning: true, contextWindow: 1048576, maxOutput: 256000 },
+  // "ark-code-latest":        { vision: true, reasoning: true, contextWindow: 256000, maxOutput: 128000 },
+  // "doubao-seed-evolving":   { vision: true, reasoning: true, contextWindow: 1048576, maxOutput: 256000 },
 };
 
 const KIRO_GPT_5_6_CAPABILITIES = { vision: true, reasoning: true, search: true, thinkingFormat: "openai", contextWindow: 272000, maxOutput: 128000 };
@@ -336,17 +336,13 @@ export const PROVIDER_CAPABILITIES = {
   // reasoning.canDisableThinking flag — see the note in the codebuddy-cn block
   // below; it is NOT the inverse of onlyReasoning.
   "codebuddy-cn": {
-    "glm-5.2":            { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 48000 },
-    "glm-5.1":            { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 200000, maxOutput: 48000 },
+    "glm-5.2":            { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: true, contextWindow: 1000000, maxOutput: 131072 },
+    "glm-5.1":            { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 200000, maxOutput: 48000 },
     "glm-5.0":            { reasoning: true, thinkingFormat: "openai", contextWindow: 200000, maxOutput: 48000 },
     // maxOutput 64000 per both the plugin-baked fallback and the live server
     // table (the old 38000 had no source and truncated output).
     "glm-4.7":            { reasoning: true, thinkingFormat: "openai", contextWindow: 200000, maxOutput: 48000 },
     "minimax-m3":         { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 512000, maxOutput: 524288 },
-    "minimax-m2.7":       { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 200000, maxOutput: 48000 },
-    "kimi-k3":            { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 50000 },
-    "kimi-k2.7":          { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 256000, maxOutput: 32000 },
-    "kimi-k2.6":          { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 256000, maxOutput: 32000 },
     "kimi-k2.5":          { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 164000, maxOutput: 32000 },
     "hy3-preview":        { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 192000, maxOutput: 64000 },
     "deepseek-v4-flash":  { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 50000 },
@@ -414,27 +410,6 @@ export const PROVIDER_CAPABILITIES = {
     "poolside/laguna-xs-2.1:free":      { tools: true, reasoning: true, thinkingFormat: "nous", contextWindow: 262144, maxOutput: 32768 },
     "stealth/missingno":                { tools: true, reasoning: true, thinkingFormat: "nous", contextWindow: 262144, maxOutput: 131072 },
   },
-  "cbcn": {
-    "glm-5.3":            { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 48000 },
-    "glm-5.3-flash":      { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 48000 },
-    "glm-5.2":            { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 48000 },
-    "glm-5.1":            { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 200000, maxOutput: 48000 },
-    "glm-5.0":            { reasoning: true, thinkingFormat: "openai", contextWindow: 200000, maxOutput: 48000 },
-    "glm-5.0-turbo":      { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 200000, maxOutput: 48000 },
-    "glm-5v-turbo":       { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 200000, maxOutput: 38000 },
-    "glm-4.7":            { reasoning: true, thinkingFormat: "openai", contextWindow: 200000, maxOutput: 48000 },
-    "minimax-m3":         { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 512000, maxOutput: 48000 },
-    "minimax-m2.7":       { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 200000, maxOutput: 48000 },
-    "kimi-k3":            { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 50000 },
-    "kimi-k2.7":          { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 256000, maxOutput: 32000 },
-    "kimi-k2.6":          { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 256000, maxOutput: 32000 },
-    "kimi-k2.5":          { vision: true, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 164000, maxOutput: 32000 },
-    "hy3":                { vision: false, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 192000, maxOutput: 64000 },
-    "hy4-preview":           { vision: false, reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 64000 },
-    "deepseek-v4-pro":    { vision: true, reasoning: true, thinkingFormat: "deepseek", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 384000 },
-    "deepseek-v4-flash":  { vision: true, reasoning: true, thinkingFormat: "deepseek", thinkingCanDisable: false, contextWindow: 1000000, maxOutput: 384000 },
-    "deepseek-v3-2-volc": { reasoning: true, thinkingFormat: "deepseek", thinkingCanDisable: false, contextWindow: 96000, maxOutput: 32000 },
-  },
   // Volcengine Agent Plan — Ark (registry alias "ark-ap"; key must match the
   // alias, not the id "ark-ap-provider", since PROVIDER_MODELS indexes by alias).
   // thinkingFormat "ark": Ark exposes thinking.type + reasoning_effort on BOTH
@@ -447,7 +422,7 @@ export const PROVIDER_CAPABILITIES = {
   // NOTE: vision:false on the non-doubao models is INTENTIONAL — the Ark plan
   // endpoints do not accept image blocks for them, even though the underlying
   // models (kimi-k2.x, minimax-m3) are multimodal elsewhere. Do not "fix" to true.
-  "ark-ap": {
+  "ark-ap-provider": {
     "glm-5.2":            { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 128000 },
     "glm-5.3":            { vision: false, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 128000 },
     "glm-5.3-flash":      { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 1048576, maxOutput: 128000 },
@@ -477,7 +452,6 @@ export const PROVIDER_CAPABILITIES = {
     "doubao-seed-2.1-pro":  { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 256000, maxOutput: 256000 },
     "doubao-seed-2.1-lite": { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 256000, maxOutput: 128000 },
     "doubao-seed-2.0-mini": { vision: true, reasoning: true, thinkingFormat: "ark", contextWindow: 256000, maxOutput: 128000 },
-  },
   },
 };
 

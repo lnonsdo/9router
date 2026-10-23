@@ -55,6 +55,7 @@ export default {
     { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro" },
     { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" },
     { id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash" },
+    { id: "deepseek-v4.1-flash-economy", name: "DeepSeek V4.1 Flash Economy" },
     { id: "minimax-m3", name: "MiniMax M3" },
   ],
 };

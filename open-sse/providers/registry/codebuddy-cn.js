@@ -2,7 +2,10 @@ export default {
   id: "codebuddy-cn",
   // Short model prefix (cbcn/glm-5.2). "cbcn" = CodeBuddy CN; reserve "cbai"
   // for a future codebuddy-ai (intl) provider. The full id still resolves.
-  alias: "cbcn",
+  alias: "codebuddy-cn",
+    aliases: [
+    "cbcn",
+  ],
   uiAlias: "cbcn",
   hidden: false,
   priority: 90,
@@ -52,6 +55,7 @@ export default {
     { id: "kimi-k3", name: "Kimi-K3" },
     { id: "kimi-k2.7", name: "Kimi-K2.7-Code" },
     { id: "kimi-k2.6", name: "Kimi-K2.6" },
+    { id: "step-5-preview", name: "Step-5-Preview" },
     // Catalog mirrors the server's product-config payload (the plugin fetches
     // it from copilot.tencent.com). Models the server no longer publishes are
     // removed even when the chat endpoint still answers them — the published
