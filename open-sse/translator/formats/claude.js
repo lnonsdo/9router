@@ -458,6 +458,36 @@ export function anchorClaudeCache(body) {
   return body;
 }
 
+// Tool-search clients (Claude Code / ZCode) return `tool_reference` blocks in
+// tool_result content to defer-load tools. Only Anthropic itself parses them —
+// every other engine behind a Claude-format transport rejects the unknown block
+// outright (AMR Link / open-design answers 422 "messages[N]: missing field
+// `content`" for both the flat {tool_name} and the nested {tool_reference:{…}}
+// shapes, verified live 2026-10-24; Kimi's gateway fails the same way). The
+// referenced tools already ride in the `tools` array, so a text note preserves
+// everything a non-Anthropic backend can act on.
+function toolReferenceToText(block) {
+  const name = block.tool_name || block.tool_reference?.tool_name;
+  return { type: CLAUDE_BLOCK.TEXT, text: `[tool loaded: ${name || "unknown"}]` };
+}
+
+function downgradeToolReferenceBlocks(body) {
+  if (!Array.isArray(body?.messages)) return body;
+  for (const msg of body.messages) {
+    if (!Array.isArray(msg.content)) continue;
+    msg.content = msg.content.flatMap((block) => {
+      if (block?.type === CLAUDE_BLOCK.TOOL_RESULT && Array.isArray(block.content)) {
+        block.content = block.content.map((part) =>
+          part?.type === CLAUDE_BLOCK.TOOL_REFERENCE ? toolReferenceToText(part) : part
+        );
+        return [block];
+      }
+      return [block?.type === CLAUDE_BLOCK.TOOL_REFERENCE ? toolReferenceToText(block) : block];
+    });
+  }
+  return body;
+}
+
 // Prepare request for Claude format endpoints
 // - Cleanup cache_control
 // - Filter empty messages
@@ -553,6 +583,10 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
 
   // 2. Messages: process in optimized passes
   if (body.messages && Array.isArray(body.messages)) {
+    // Anthropic reads tool_reference (tool-search beta); every other engine on
+    // this transport rejects the block — downgrade before the passes below.
+    if (!isAnthropicServing) downgradeToolReferenceBlocks(body);
+
     const len = body.messages.length;
     const originalLastRole = body.messages[len - 1]?.role;
     let filtered = [];
