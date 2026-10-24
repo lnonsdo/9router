@@ -127,8 +127,15 @@ const glm = {
       };
     }
 
-    // ready.accessToken is the Z.AI OAuth token — derive the coding-plan API key
-    const { planApiKey, businessToken } = await resolveCodingPlanApiKey(config, zaiAccessToken);
+    // ready.accessToken is the Z.AI OAuth token. Coding-plan flows derive the
+    // long-lived coding-plan API key from it; start-plan flows (config.mintPlanApiKey
+    // === false) skip that entirely — their account may have no coding-plan
+    // entitlement — and keep the raw OAuth token as the connection credential.
+    let planApiKey = zaiAccessToken;
+    let businessToken = "";
+    if (config.mintPlanApiKey !== false) {
+      ({ planApiKey, businessToken } = await resolveCodingPlanApiKey(config, zaiAccessToken));
+    }
 
     return {
       ok: true,

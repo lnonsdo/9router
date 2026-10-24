@@ -29,6 +29,7 @@ import trae from "./trae.js";
 import windsurf from "./windsurf.js";
 import zed from "./zed.js";
 import glm from "./glm.js";
+import glmStart from "./glm-start.js";
 import minimaxCode from "./minimax-code.js";
 import minimaxCodeGlobal from "./minimax-code-global.js";
 import nous from "./nous.js";
@@ -62,6 +63,7 @@ const PROVIDERS = {
   windsurf,
   zed,
   glm,
+  "glm-start": glmStart,
   "minimax-code": minimaxCode,
   "minimax-code-global": minimaxCodeGlobal,
   nous,

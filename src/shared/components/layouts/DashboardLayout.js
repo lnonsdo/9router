@@ -39,6 +39,22 @@ export default function DashboardLayout({ children }) {
   const notifications = useNotificationStore((state) => state.notifications);
   const removeNotification = useNotificationStore((state) => state.removeNotification);
 
+  // Session guard: when the dashboard shell outlives its session (dev restart,
+  // expired cookie), every client-side fetch 401s and pages hang on loading
+  // with no redirect — the server-side proxy only gates document requests.
+  // Re-validate per navigation and send stale sessions to /login.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/auth/status")
+      .then((r) => r.json())
+      .then((s) => {
+        if (cancelled) return;
+        if (s.requireLogin && !s.authenticated) window.location.replace("/login");
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [pathname]);
+
   // Preload heavy usage charts in background when browser is idle
   useEffect(() => {
     const preload = () => {

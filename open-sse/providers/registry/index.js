@@ -150,6 +150,7 @@ import p152 from "./ark-ap-provider.js";
 import p153 from "./volcengine-sso.js";
 import p154 from "./alitp-cn.js";
 import p155 from "./open-design.js";
+import p156 from "./glm-start.js";
 export default [
   p0,
   p1,
@@ -300,4 +301,5 @@ export default [
   p153,
   p154,
   p155,
+  p156,
 ];

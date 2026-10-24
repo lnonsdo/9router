@@ -3,6 +3,8 @@
 
 const ICON_ALIASES = {
   "perplexity-agent": "perplexity",
+  // Start Plan rides the GLM brand mark
+  "glm-start": "glm",
   "gitlab-duo": "gitlab",
   "vercel-ai-gateway": "vercel",
   "ollama-search": "ollama",

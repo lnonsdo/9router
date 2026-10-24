@@ -1,4 +1,7 @@
+import { createHash } from "node:crypto";
 import { getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
+import { buildOfficialSystem } from "open-sse/executors/glm-start.js";
+import { buildClearModelLocksUpdate } from "open-sse/services/accountFallback.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { testProxyUrl } from "@/lib/network/proxyTest";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS } from "@/shared/constants/providers";
@@ -685,6 +688,40 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
         const valid = res.status !== 401 && res.status !== 403;
         return { valid, error: valid ? null : "Invalid API key" };
       }
+      case "glm-start": {
+        // Start Plan rides zcode.z.ai; the zcode JWT (stored on the connection
+        // at OAuth login) is the model credential in both auth headers, exactly
+        // like the official client's captured requests. The gateway's 3012 risk
+        // gate inspects the BODY: `system` must lead with the official ZCode
+        // identity blocks (see glm-start-identity.js) or the request is blocked
+        // with HTTP 405 + code 3012 — and 3012 puts the account in cooldown,
+        // so this probe always ships the identity blocks.
+        const jwt = connection.providerSpecificData?.zcodeJwtToken;
+        if (!jwt) return { valid: false, error: "Start Plan connection is missing tokens — re-run OAuth login" };
+        const midHex = createHash("sha256").update(`zcode-device-mid:${jwt}`).digest("hex").slice(0, 32);
+        const deviceMid = `${midHex.slice(0, 8)}-${midHex.slice(8, 12)}-${midHex.slice(12, 16)}-${midHex.slice(16, 20)}-${midHex.slice(20, 32)}`;
+        const res = await fetchWithConnectionProxy("https://zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages", {
+          method: "POST",
+          headers: {
+            "authorization": `Bearer ${jwt}`,
+            "x-api-key": jwt,
+            "x-device-mid": deviceMid,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "GLM-5.3-Flash",
+            max_tokens: 1,
+            stream: false,
+            // the exact 3-block official shape the executor ships (a 4th system
+            // block — even a benign one — trips the 3012 risk gate)
+            system: buildOfficialSystem(undefined, "GLM-5.3-Flash"),
+            messages: [{ role: "user", content: [{ type: "text", text: "test" }] }],
+          }),
+        }, effectiveProxy);
+        const valid = res.status !== 401 && res.status !== 403 && res.status !== 405;
+        return { valid, error: valid ? null : "Start Plan authentication failed" };
+      }
       case "glm-cn": {
         const res = await fetchWithConnectionProxy("https://open.bigmodel.cn/api/coding/paas/v4/chat/completions", {
           method: "POST",
@@ -1022,6 +1059,12 @@ export async function testSingleConnection(id) {
         : null
       : new Date().toISOString(),
   };
+  // A passing live probe invalidates any account/model lock (e.g. the glm-start
+  // risk-control cooldown): the credential demonstrably works again. Test is
+  // the self-service unlock — a failed test leaves the lock untouched.
+  if (result.valid) {
+    Object.assign(updateData, buildClearModelLocksUpdate(connection));
+  }
 
   if (result.refreshed && result.newTokens) {
     if (result.newTokens.accessToken) updateData.accessToken = result.newTokens.accessToken;

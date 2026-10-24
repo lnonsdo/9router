@@ -11,6 +11,16 @@ let selectionMutex = Promise.resolve();
 
 const GITHUB_MONTHLY_USAGE_LIMIT = "you've reached your additional usage limit for your plan";
 
+// Z.AI Start Plan risk gate (3012 "unusual activity"): empirically the gateway
+// scores each request individually — a corrected request is admitted again
+// immediately (verified 2026-10-24: a 3012 was followed by a 200 one minute
+// later on the same account). The reference project nevertheless documents
+// escalating penalties (30min → 24h → disabled) for repeated hits, so after the
+// FIRST rejection the connection is locked account-wide for one hour to keep
+// any automation loop from re-probing. A passing Test on the connection clears
+// the lock immediately (self-service unlock), as does any successful request.
+const RISK_CONTROL_COOLDOWN_MS = 60 * 60 * 1000;
+
 function githubMonthlyResetMs(status, errorText, provider) {
   if (resolveProviderId(provider) !== "github" || Number(status) !== 402) return null;
   if (!String(errorText || "").toLowerCase().includes(GITHUB_MONTHLY_USAGE_LIMIT)) return null;
@@ -254,8 +264,15 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const githubResetAtMs = githubMonthlyResetMs(status, errorText, provider);
 
   // Provider-specific precise cooldown (e.g. codex usage_limit_reached resets_at) overrides backoff
+  const errorTextStr = typeof errorText === "string" ? errorText : "";
+  const riskControlled = provider === "glm-start"
+    && (Number(status) === 405 || /unusual activity|\b3012\b/.test(errorTextStr));
   let shouldFallback, cooldownMs, newBackoffLevel;
-  if (githubResetAtMs) {
+  if (riskControlled) {
+    shouldFallback = true;
+    cooldownMs = RISK_CONTROL_COOLDOWN_MS;
+    newBackoffLevel = 0;
+  } else if (githubResetAtMs) {
     shouldFallback = true;
     cooldownMs = githubResetAtMs - Date.now();
     newBackoffLevel = 0;
@@ -272,7 +289,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
 
   const reason = typeof errorText === "string" ? errorText.slice(0, 200) : "Provider error";
-  const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
+  const lockUpdate = buildModelLockUpdate((githubResetAtMs || riskControlled) ? null : model, cooldownMs);
 
   await updateProviderConnection(connectionId, {
     ...lockUpdate,

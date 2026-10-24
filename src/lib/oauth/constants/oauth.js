@@ -223,6 +223,10 @@ export const WINDSURF_CONFIG = {
 // refresh grant).
 export const GLM_OAUTH_CONFIG = { ...PROVIDER_OAUTH["glm"] };
 
+// GLM Start Plan (Z.ai) — same CLI polling flow as glm, but skips the coding-plan
+// API key minting: the OAuth access token itself is the connection credential.
+export const GLM_START_OAUTH_CONFIG = { ...PROVIDER_OAUTH["glm-start"] };
+
 // Zed hosted LLM aggregator — RSA keypair native-app auth (NOT OAuth).
 // Client generates ephemeral RSA-2048 keypair; user signs in at zed.dev/native_app_signin;
 // Zed redirects to local callback with access_token RSA-encrypted against our public key.
@@ -275,6 +279,7 @@ export const PROVIDERS = {
   TRAE: "trae",
   WINDSURF: "windsurf",
   GLM: "glm",
+  GLM_START: "glm-start",
   ZED: "zed",
   NOUS: "nous",
   VOLCENGINE_SSO: "volcengine-sso",
