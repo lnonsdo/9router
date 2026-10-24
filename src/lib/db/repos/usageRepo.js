@@ -788,7 +788,7 @@ export async function appendRequestLog() {}
 // sessionId is its own group — including zcode subagents, which carry their own
 // session id. Rows without a sessionId (legacy records or clients that don't
 // carry one) are grouped under a single null bucket and surfaced as "unclassified".
-export async function getSessionStats(filter = {}) {
+export async function getSessionStats(filter = {}, opts = {}) {
   try {
     const db = await getAdapter();
     const conds = [];
@@ -797,6 +797,8 @@ export async function getSessionStats(filter = {}) {
     if (filter.startDate) { conds.push("timestamp >= ?"); params.push(new Date(filter.startDate).toISOString()); }
     if (filter.endDate) { conds.push("timestamp <= ?"); params.push(new Date(filter.endDate).toISOString()); }
     if (filter.connectionId) { conds.push("connectionId = ?"); params.push(filter.connectionId); }
+    if (filter.sessionId) { conds.push("sessionId = ?"); params.push(filter.sessionId); }
+    if (filter.unclassified) { conds.push("sessionId IS NULL"); }
 
     const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
 
@@ -822,19 +824,41 @@ export async function getSessionStats(filter = {}) {
     // Cache tokens live inside the JSON `tokens` column, which we can't reliably
     // SUM across engines (json_extract availability varies). Pull the raw tokens
     // and accumulate cached/cache-creation in JS, keyed by the same group key.
+    // The same pass aggregates per-model stats for the session-drawer breakdown;
+    // the list endpoint skips that pass (opts.includeModelStats=false) to keep
+    // the response light — the drawer lazy-loads stats per session instead.
+    const includeModelStats = opts.includeModelStats !== false;
     const tokenRows = db.all(
-      `SELECT COALESCE(sessionId, '') AS grpKey, tokens FROM usageHistory ${where}`,
+      `SELECT COALESCE(sessionId, '') AS grpKey, model, promptTokens, completionTokens, cost, tokens FROM usageHistory ${where}`,
       params
     );
     const cacheByGroup = {};
+    const modelByGroup = includeModelStats ? {} : null;
     for (const tr of tokenRows) {
       const key = tr.grpKey || "";
       const t = parseJson(tr.tokens, {});
-      const cached = t?.cached_tokens ?? t?.cache_read_input_tokens ?? 0;
-      const cacheCreate = t?.cache_creation_input_tokens ?? 0;
+      const cached = Number(t?.cached_tokens ?? t?.cache_read_input_tokens) || 0;
+      const cacheCreate = Number(t?.cache_creation_input_tokens) || 0;
       if (!cacheByGroup[key]) cacheByGroup[key] = { cachedTokens: 0, cacheCreationTokens: 0 };
-      cacheByGroup[key].cachedTokens += Number(cached) || 0;
-      cacheByGroup[key].cacheCreationTokens += Number(cacheCreate) || 0;
+      cacheByGroup[key].cachedTokens += cached;
+      cacheByGroup[key].cacheCreationTokens += cacheCreate;
+
+      if (!includeModelStats) continue;
+      const modelKey = tr.model || "unknown";
+      if (!modelByGroup[key]) modelByGroup[key] = {};
+      if (!modelByGroup[key][modelKey]) {
+        modelByGroup[key][modelKey] = {
+          model: modelKey, requests: 0, promptTokens: 0, completionTokens: 0,
+          cachedTokens: 0, cacheCreationTokens: 0, cost: 0,
+        };
+      }
+      const m = modelByGroup[key][modelKey];
+      m.requests += 1;
+      m.promptTokens += Number(tr.promptTokens) || 0;
+      m.completionTokens += Number(tr.completionTokens) || 0;
+      m.cachedTokens += cached;
+      m.cacheCreationTokens += cacheCreate;
+      m.cost += Number(tr.cost) || 0;
     }
 
     const sessions = rows.map((r) => {
@@ -852,6 +876,11 @@ export async function getSessionStats(filter = {}) {
         lastSeen: r.lastSeen,
         providers: (r.providers || "").split(",").filter(Boolean),
         models: (r.models || "").split(",").filter(Boolean),
+        modelStats: includeModelStats
+          ? Object.values(modelByGroup[r.grpKey] || {}).sort(
+              (a, b) => b.cost - a.cost || b.requests - a.requests
+            )
+          : [],
       };
     });
 
