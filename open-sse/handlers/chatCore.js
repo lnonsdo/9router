@@ -33,6 +33,8 @@ import { stripUnsupportedModalities } from "../translator/concerns/modality.js";
 import { prefetchRemoteImages } from "../translator/concerns/prefetch.js";
 import { defaultClaudeToolType, shouldDefaultClaudeToolType } from "../translator/concerns/toolCall.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
+import { planServerToolEmulation, injectEmulatedTools, runServerToolEmulation, claudeMessageToSseBody } from "../services/serverToolEmulator.js";
+import { extractUsageFromResponse, saveUsageStats, formatDoneLine } from "./chatCore/requestDetail.js";
 
 /**
  * Core chat handler - shared between SSE and Worker
@@ -61,7 +63,7 @@ export function stripContinuityFields(body) {
   return body;
 }
 
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, headroomTimeoutMs, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, customPromptEnabled, customPrompt, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, providerOverrides }) {
+export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, headroomTimeoutMs, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, customPromptEnabled, customPrompt, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, providerOverrides, webToolsAdapter, executeServerTool }) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
   // Stable per-session color so all lines of one CLI conversation share a tag
@@ -193,6 +195,24 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     } catch (e) { log?.warn?.("MODALITY", `image prefetch failed: ${e.message}`); }
   }
 
+  // Web Tools Adapter: when a Claude client requests Anthropic server tools
+  // (web_search / web_fetch) and the target cannot run them natively, emulate
+  // them in the gateway via the configured search/fetch providers. Activating
+  // forces the upstream to non-streaming — the loop buffers complete rounds.
+  let emuPlan = null;
+  if (!passthrough && webToolsAdapter && executeServerTool) {
+    try {
+      emuPlan = planServerToolEmulation({ body, sourceFormat, targetFormat, provider, model, adapterConfig: webToolsAdapter });
+    } catch (e) {
+      log?.warn?.("WEBTOOLS", `plan failed, skipping emulation: ${e.message}`);
+      emuPlan = null;
+    }
+    if (emuPlan) {
+      log?.info?.("WEBTOOLS", `emulating ${emuPlan.tools.map(t => t.kind).join("+")} for ${provider}/${model} → ${targetFormat} (upstream forced non-streaming)`);
+      stream = false;
+    }
+  }
+
   let translatedBody;
   let toolNameMap;
   let customToolNames;
@@ -214,7 +234,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     // Normalize newer Cowork/CC beta shapes (adaptive thinking, mid-conversation system) the API rejects
     if (clientTool === "claude") normalizeClaudePassthrough(translatedBody, translatedBody.model);
   } else {
-    translatedBody = translateRequest(sourceFormat, targetFormat, upstreamModel, body, stream, credentials, provider, reqLogger, stripList, connectionId, clientTool);
+    translatedBody = translateRequest(sourceFormat, targetFormat, upstreamModel, emuPlan?.degradedBody || body, stream, credentials, provider, reqLogger, stripList, connectionId, clientTool);
     if (!translatedBody) {
       trackPendingRequest(model, provider, connectionId, false, true);
       return createErrorResult(HTTP_STATUS.BAD_REQUEST, `Failed to translate request for ${sourceFormat} → ${targetFormat}`);
@@ -235,6 +255,15 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       translatedBody.tools = deduped;
       log?.debug?.("TOOLDEDUP", `stripped ${stripped.length}: ${stripped.slice(0, 3).join(", ")}${stripped.length > 3 ? "..." : ""}`);
     }
+  }
+
+  // Web Tools Adapter: swap the emulated server tools in as plain tools in the
+  // target's shape (after dedup so they are never deduped against client tools).
+  // stream is pinned as well: same-format (claude→claude) translation passes the
+  // client's stream flag through untouched, and the loop needs JSON rounds.
+  if (emuPlan) {
+    translatedBody.stream = false;
+    injectEmulatedTools(translatedBody, emuPlan, targetFormat);
   }
 
   // Token savers: applied at the final body just before dispatch
@@ -516,6 +545,88 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, sessionId: sessionSeed, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
   const trackDone = () => trackPendingRequest(model, provider, connectionId, false);
+
+  // Web Tools Adapter: run the emulation loop (upstream is non-streaming) and
+  // synthesize the client response with restored server_tool_use blocks, in
+  // SSE or JSON shape depending on what the client asked for.
+  if (emuPlan) {
+    const emuResult = await runServerToolEmulation({
+      firstResponse: providerResponse,
+      plan: emuPlan,
+      translatedBody,
+      executeServerTool,
+      runUpstream: async (upstreamBody) => {
+        const r = await executor.execute({
+          model,
+          body: upstreamBody,
+          stream: false,
+          credentials,
+          providerSessionId: sessionSeed,
+          clientTool,
+          signal: streamController.signal,
+          log,
+          proxyOptions,
+          providerOverrides,
+        });
+        return r.response;
+      },
+      model: upstreamModel,
+      clientModel: clientRawRequest?.body?.model || model,
+      targetFormat,
+      responseFormat: providerResponseFormat,
+      log,
+    });
+    streamController.handleComplete();
+
+    if (!emuResult.ok) {
+      trackDone();
+      appendLog({ status: `FAILED ${emuResult.status || HTTP_STATUS.BAD_GATEWAY}` });
+      return createErrorResult(emuResult.status || HTTP_STATUS.BAD_GATEWAY, emuResult.error || "Web tool emulation failed");
+    }
+
+    trackDone();
+    const claudeResponse = emuResult.claudeResponse;
+    const usage = {
+      prompt_tokens: claudeResponse.usage?.input_tokens || 0,
+      completion_tokens: claudeResponse.usage?.output_tokens || 0,
+    };
+    appendLog({ tokens: usage, status: "200 OK" });
+    saveUsageStats({ provider, model, tokens: usage, connectionId, sessionId: sessionSeed, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
+    if (log?.line) log.line(reqTag, "📊", `${formatDoneLine({ usage, latency: { total: Date.now() - requestStartTime } })} | EMU:${emuResult.rounds}r`);
+    if (onRequestSuccess) {
+      Promise.resolve()
+        .then(onRequestSuccess)
+        .catch(err => {
+          console.error("[ChatCore] onRequestSuccess failed:", err?.message || err);
+        });
+    }
+    saveRequestDetail(buildRequestDetail({
+      provider, model, connectionId, sessionId: sessionSeed,
+      latency: { ttft: Date.now() - requestStartTime, total: Date.now() - requestStartTime },
+      tokens: usage,
+      request: extractRequestConfig(body, false),
+      providerRequest: translatedBody || null,
+      response: {
+        content: (claudeResponse.content || []).filter(b => b.type === "text").map(b => b.text).join("\n") || null,
+        thinking: (claudeResponse.content || []).filter(b => b.type === "thinking").map(b => b.thinking).join("\n") || null,
+        finish_reason: claudeResponse.stop_reason || "end_turn",
+      },
+      pxpipe: pxpipeSummary,
+      status: "success"
+    }, { endpoint: clientRawRequest?.endpoint || null })).catch(err => {
+      console.error("[RequestDetail] Failed to save:", err.message);
+    });
+
+    const wantsSse = clientRequestedStreaming;
+    return {
+      success: true,
+      response: new Response(wantsSse ? claudeMessageToSseBody(claudeResponse) : JSON.stringify(claudeResponse), {
+        headers: wantsSse
+          ? { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive", "Access-Control-Allow-Origin": "*" }
+          : { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+      }),
+    };
+  }
 
   // Provider forced streaming but client wants JSON. The Responses wire always
   // streams upstream (openaiToOpenAIResponsesRequest pins stream:true), so a

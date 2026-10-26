@@ -23,6 +23,16 @@ const DEFAULT_SETTINGS = {
     audioInput: { enabled: true, roundRobin: false, models: [] },
     videoInput: { enabled: false, roundRobin: false, models: [] },
   },
+  // Web Tools Adapter — emulates Anthropic server tools (web_search/web_fetch)
+  // on targets that cannot run them natively, via the configured providers.
+  // Disabled until the user picks providers: with none configured the emulator
+  // would only turn working (tool-stripped) requests into failing tool calls.
+  // roundRobin rotates the starting provider per execution (same semantics as
+  // the capacity adapter's roundRobin) to spread usage across the pool.
+  webToolsAdapter: {
+    webSearch: { enabled: false, roundRobin: false, providers: [] },
+    webFetch: { enabled: false, roundRobin: false, providers: [] },
+  },
   requireLogin: true,
   requireApiKey: true,
   tunnelDashboardAccess: true,

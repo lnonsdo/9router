@@ -53,6 +53,8 @@ export const DEFAULT_CAPABILITIES = {
   audioOutput: false,   // generate audio
   // features
   search: false,        // built-in web search tool / grounding
+  webTools: false,      // accepts Anthropic server tools (web_search_20250305 / web_fetch_20250910) passthrough — upstream executes them itself.
+                        // false → serverToolEmulator (Web Tools Adapter) can emulate them in the gateway when configured.
   tools: true,          // function / tool calling
   reasoning: false,     // thinking / reasoning
   // thinking wire format (only meaningful when reasoning:true). null → derive from transport.format.
@@ -854,7 +856,27 @@ function isCommandCodeTextOnly(model) {
   }
   return false;
 }
-export function getCapabilitiesForModel(provider, model) {
+// Provider-wide feature overrides — applied on top of every per-model result.
+// Third-party endpoints that merely speak the Claude wire format do NOT imply
+// server tool support: only providers whose upstream really executes Anthropic
+// server tools declare webTools:true here. Everything else keeps the
+// DEFAULT_CAPABILITIES floor (false), so the Web Tools Adapter can emulate.
+const PROVIDER_FEATURES = {
+  anthropic: { webTools: true },
+};
+
+// Strictly additive, like the catalog refine — a declared feature only flips ON.
+function applyProviderFeatures(caps, provider) {
+  const features = PROVIDER_FEATURES[String(provider || "")];
+  if (!features) return caps;
+  const merged = { ...caps };
+  for (const [key, value] of Object.entries(features)) {
+    if (value === true) merged[key] = true;
+  }
+  return merged;
+}
+
+function resolveModelCapabilities(provider, model) {
   if (!model) return { ...DEFAULT_CAPABILITIES };
 
   // Canonical exact lookup strips vendor prefix: "anthropic/claude-opus-4.7" -> "claude-opus-4.7".
@@ -898,6 +920,10 @@ export function getCapabilitiesForModel(provider, model) {
 
   // 4. Floor
   return refine(null, provider, model);
+}
+
+export function getCapabilitiesForModel(provider, model) {
+  return applyProviderFeatures(resolveModelCapabilities(provider, model), provider);
 }
 
 // Gemini 4 (Argon) drops sampling params and requires functionResponse-last merged user turns.

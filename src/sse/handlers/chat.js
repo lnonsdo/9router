@@ -28,6 +28,7 @@ import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
 import { getKeyAccessContext, enforceKeyAccess, filterAdapterModels } from "../services/keyAccess.js";
 import { resolveSmartChoice } from "../services/systemoneRouter.js";
+import { createWebToolsExecutor } from "../services/webToolsBridge.js";
 
 /**
  * Handle chat completion request
@@ -311,6 +312,10 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     // Use shared chatCore
     const chatSettings = await getSettings();
     const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
+    // Web Tools Adapter: emulate Anthropic server tools (web_search/web_fetch)
+    // for targets that cannot run them natively, via the configured providers.
+    const webToolsAdapter = chatSettings.webToolsAdapter || null;
+    const webTools = webToolsAdapter ? createWebToolsExecutor({ adapterConfig: webToolsAdapter }) : null;
     const result = await handleChatCore({
       body: { ...body, model: `${provider}/${model}` },
       modelInfo: { provider, model },
@@ -341,6 +346,9 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       providerThinking,
       // Per-provider user overrides (custom headers / connect timeout) from settings
       providerOverrides: (chatSettings.providerOverrides || {})[provider] || null,
+      // Web Tools Adapter (server tool emulation); both null when unconfigured
+      webToolsAdapter,
+      executeServerTool: webTools ? (args) => webTools.execute(args) : null,
       // Detect source format by endpoint + body
       sourceFormatOverride: request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null,
       onCredentialsRefreshed: async (newCreds) => {
