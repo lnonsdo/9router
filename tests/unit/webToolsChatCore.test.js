@@ -334,6 +334,49 @@ describe("handleChatCore server tool emulation (Web Tools Adapter)", () => {
     expect(executeMock).toHaveBeenCalledTimes(1);
   });
 
+  it("treats a missing stream flag as non-streaming (Anthropic default)", async () => {
+    executeMock.mockImplementation(async () => ({
+      response: claudeJson([{ type: "text", text: "ok" }]),
+      url: "https://amr-link.open-design.ai/v1/messages",
+      headers: {},
+      transformedBody: null,
+    }));
+
+    const result = await handleChatCore({
+      body: {
+        model: "od/deepseek-v4.1-flash",
+        max_tokens: 128,
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      },
+      modelInfo: { provider: "open-design", model: "deepseek-v4.1-flash" },
+      credentials: { apiKey: "test-key", providerSpecificData: {} },
+      log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), line: vi.fn(), tagForSession: () => "T" },
+      connectionId: "test-conn",
+      rtkEnabled: false,
+      headroomEnabled: false,
+      cavemanEnabled: false,
+      ponytailEnabled: false,
+      customPromptEnabled: false,
+      pxpipeEnabled: false,
+      sourceFormatOverride: "claude",
+      webToolsAdapter: null,
+      executeServerTool: null,
+      clientRawRequest: {
+        endpoint: "/v1/messages",
+        body: { model: "od/deepseek-v4.1-flash" },
+        headers: { accept: "*/*" },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    // AI-SDK tool-internal calls (ZCode WebFetch summarizer) omit `stream` and
+    // parse JSON; the upstream must not be streamed in that case.
+    expect(executeMock.mock.calls[0][0].stream).toBe(false);
+    expect(result.response.headers.get("content-type")).toContain("application/json");
+    const message = await result.response.json();
+    expect(message.content[0]).toEqual({ type: "text", text: "ok" });
+  });
+
   it("emulates hosted web_search for a Codex/Responses client (open-design)", async () => {
     const executedBodies = [];
     const responsesJson = (output, usage = { input_tokens: 10, output_tokens: 4 }) => new Response(JSON.stringify({

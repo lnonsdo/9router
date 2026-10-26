@@ -146,7 +146,11 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   const clientRequestedStreaming = body.stream === true || sourceFormat === FORMATS.ANTIGRAVITY || sourceFormat === FORMATS.GEMINI || sourceFormat === FORMATS.GEMINI_CLI;
   const providerRequiresStreaming = PROVIDERS[provider]?.forceStream === true;
-  let stream = providerRequiresStreaming ? true : (body.stream !== false);
+  // A missing `stream` means non-streaming (the Anthropic/OpenAI default). The
+  // old `!== false` default streamed SSE to clients that omitted the flag and
+  // then parsed JSON — e.g. AI-SDK tool-internal calls such as ZCode's WebFetch
+  // summarizer ("Invalid JSON response").
+  let stream = providerRequiresStreaming ? true : clientRequestedStreaming;
 
   // Image generation models require non-streaming (Google v1internal:generateContent)
   const modelType = getModelType(alias, model);

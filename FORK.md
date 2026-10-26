@@ -115,6 +115,11 @@ A fork-only usage stack on top of upstream's flat request log.
   passthrough streams and aggregates `text_delta` / `thinking_delta` for request details instead
   of reporting `[Empty streaming response]`.
   Tests: `tests/unit/passthrough-done-terminator.test.js`.
+- `fix(chat-core): a missing body.stream means non-streaming` (2026-10-26) — the Anthropic/OpenAI
+  default. The old `body.stream !== false` default streamed SSE to clients that omitted the flag
+  and then parsed JSON (AI-SDK tool-internal calls such as ZCode's WebFetch summarizer failed with
+  "Invalid JSON response"). The upstream flag now follows `clientRequestedStreaming`.
+  Test: `tests/unit/webToolsChatCore.test.js` ("treats a missing stream flag as non-streaming").
 
 ### 🌐 Web Tools Adapter (server tool emulation)
 Targets that cannot run the client's web tool natively keep working web search/fetch: the
