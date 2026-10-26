@@ -145,12 +145,14 @@ import p144 from "./muse-web.js";
 import p146 from "./chatgpt-web.js";
 import p147 from "./veoaifree-web.js";
 import p151 from "./uc-web.js";
-// local custom providers
-import p152 from "./ark-ap-provider.js";
-import p153 from "./volcengine-sso.js";
-import p154 from "./alitp-cn.js";
-import p155 from "./open-design.js";
-import p156 from "./glm-start.js";
+import p152 from "./runcrate.js";
+// Local custom providers. Named rather than numbered so upstream's pN sequence
+// can keep growing without colliding with (or shadowing) these identifiers.
+import arkApProvider from "./ark-ap-provider.js";
+import volcengineSso from "./volcengine-sso.js";
+import alitpCn from "./alitp-cn.js";
+import openDesign from "./open-design.js";
+import glmStart from "./glm-start.js";
 export default [
   p0,
   p1,
@@ -296,10 +298,11 @@ export default [
   p146,
   p147,
   p151,
-  // local custom providers
   p152,
-  p153,
-  p154,
-  p155,
-  p156,
+  // local custom providers
+  arkApProvider,
+  volcengineSso,
+  alitpCn,
+  openDesign,
+  glmStart,
 ];
