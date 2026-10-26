@@ -95,11 +95,18 @@ Targets that cannot run Anthropic server tools natively keep working web search/
 Claude clients (e.g. Claude Code) routed to OpenAI-compatible backends **or** third-party
 Claude-compatible endpoints get the tools emulated in the gateway instead of silently losing them.
 
-- Native support is decided by a new `webTools` capability flag in
-  `open-sse/providers/capabilities.js` — same table/pattern/floor chain as `vision`, plus a
-  provider-wide `PROVIDER_FEATURES` override. Only Anthropic declares it (`webTools: true`);
-  speaking the Claude wire format does not imply server tool support, so every other target
-  emulates unless it is explicitly marked.
+- Native support reuses the existing per-model **`search`** capability
+  (`capabilities.js` — "built-in web search / grounding"), resolved through the same
+  table/pattern/floor chain as `vision`. No parallel capability was added, so
+  `capabilities.js` stays byte-identical to upstream and new models inherit the right
+  behavior automatically.
+  - The check is scoped to the **wire format**: on a Claude-format wire `search: true`
+    means the upstream executes the tool itself → passthrough. On the OpenAI wire no
+    Anthropic server tool type exists at all, so emulation always applies — trusting
+    `search` there would hand the model a parameterless function tool and lose web access.
+  - `search` is pattern-derived from the model id and cannot know whether a proxy hop
+    strips Anthropic blocks (the `tool_reference` 422 class), so aggregators are trusted
+    by default with `SERVER_TOOL_UNSAFE_PROXIES` as an evidence-driven escape hatch.
 - `open-sse/services/serverToolEmulator.js` — detection, history downgrade, tool injection,
   the emulation loop and the client-facing SSE synthesizer:
   - Emulated rounds run upstream **non-streaming** (the loop buffers complete rounds), then the
@@ -113,6 +120,12 @@ Claude-compatible endpoints get the tools emulated in the gateway instead of sil
   - `max_uses` is honored with a hard cap; a failing tool execution surfaces as an error
     tool_result instead of aborting the request (fail-open). Mixed rounds (emulated + real client
     tools) hand the turn back to the client.
+  - Search snippets and fetched page text are injected inside explicit
+    `<web_search_results>` / `<web_fetch_result>` untrusted-content boundaries, because page
+    content is a prompt-injection channel.
+  - Usage is split: the client receives Anthropic semantics (last round's prompt size as
+    `input_tokens`, summed `output_tokens`), while `result.billed` carries the cumulative
+    tokens the router actually paid across every round for usage tracking.
 - `src/sse/services/webToolsBridge.js` — credential lookup (incl. `credentialFallback`, e.g.
   `ollama-search` → `ollama`), SSRF guard shared with `/v1/web/fetch`, and provider-pool
   fallback. Each kind supports a **round-robin** toggle (same semantics as the capacity

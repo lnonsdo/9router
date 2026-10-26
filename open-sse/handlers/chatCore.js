@@ -586,9 +586,11 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
     trackDone();
     const claudeResponse = emuResult.claudeResponse;
+    // Usage tracking wants what the router actually paid across every round;
+    // the client-facing response carries Anthropic semantics (final context size).
     const usage = {
-      prompt_tokens: claudeResponse.usage?.input_tokens || 0,
-      completion_tokens: claudeResponse.usage?.output_tokens || 0,
+      prompt_tokens: emuResult.billed?.input_tokens || claudeResponse.usage?.input_tokens || 0,
+      completion_tokens: emuResult.billed?.output_tokens || claudeResponse.usage?.output_tokens || 0,
     };
     appendLog({ tokens: usage, status: "200 OK" });
     saveUsageStats({ provider, model, tokens: usage, connectionId, sessionId: sessionSeed, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
