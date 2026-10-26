@@ -456,7 +456,7 @@ export const PROVIDER_CAPABILITIES = {
   // Open Design (AMR Link) — values from GET /v1/models metadata; the gateway is
   // OpenAI-shaped for chat/responses and accepts native Claude shapes on
   // /v1/messages, so reasoning stays on the openai effort lane.
-  "opendesign": {
+  "open-design": {
     // Hunyuan H4 Preview has no global pattern (hy4*) and reasons on every call.
     "hy4-preview":          { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1048000, maxOutput: 32000 },
     // Image generation lives on /v1/images/generations — no chat/tool surface.

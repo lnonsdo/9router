@@ -19,7 +19,7 @@
 export default {
   id: "open-design",
   priority: 118,
-  alias: "opendesign",
+  alias: "open-design",
   aliases: [
     "od",
   ],

@@ -1,7 +1,7 @@
 export default {
   id: "qoder-cn",
   priority: 30,
-  alias: "qdcn",
+  alias: "qoder-cn",
   aliases: [
     "qdcn",
   ],
