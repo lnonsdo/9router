@@ -127,54 +127,60 @@ model. Two client wires are supported:
 Native support is a **per-wire** question, not a per-provider one:
   - **Claude wire**: native passthrough (`anthropic`, `anthropic-compatible-*`), or a provider
     whose top-level `transport.quirks.claudeSupportedToolTypes` whitelists **every** requested
-    type (DeepSeek, both Ark endpoints for `web_search`) → `prepareClaudeRequest` forwards it;
-    everything else emulates. A Claude-format wire alone is not native support: the model's
-    `search` flag being true does not stop the tool from being deleted before dispatch.
+    type (DeepSeek today) → `prepareClaudeRequest` forwards it; everything else emulates. A
+    Claude-format wire alone is not native support: the model's `search` flag being true does
+    not stop the tool from being deleted before dispatch. Both Ark endpoints deliberately carry
+    **no** Claude whitelist: their native behaviour is model-dependent (see the probe).
   - **Responses wire**: on a same-format `/v1/responses` request the hosted tool is forwarded
-    verbatim, so **native is the default**. Only a provider that declares the type in
-    `transport.quirks.responsesUnsupportedToolTypes` is emulated up front (open-design — its
-    gateway rejects hosted tools with 400). Entitlement denials on an otherwise-native
-    provider are caught at runtime. A cross-format hop always emulates, because hosted tools
-    cannot survive translation.
+    verbatim, so **native is the default**. A provider that declares the type in
+    `transport.quirks.responsesUnsupportedToolTypes` is emulated up front: open-design
+    (gateway 400) and the Ark coding plan (silently ignores the tool, no error). A cross-format
+    hop always emulates, because hosted tools cannot survive translation.
   - Partial whitelist coverage emulates the whole set, since the uncovered tool would vanish.
-  - **Entitlement fallback**: a provider can declare native support that the account is not
-    entitled to (Ark coding plan without 豆包搜索 Custom). When the upstream answers a web-tool
-    access error (400/401/403/404/422 mentioning web search/fetch), `chatCore` re-plans with
-    `forceEmulate: true`, rebuilds the body and retries once. The declaration stays truthful
-    and nobody has to delete provider code. With no adapter providers configured, the
-    original error is returned. Only non-2xx responses are retried — an error event inside
-    an already-started 200 SSE stream cannot be replayed.
+  - **Entitlement / silent-denial fallback**: a provider can declare native support that the
+    account is not entitled to. When the upstream answers a web-tool access error
+    (400/401/403/404/422 mentioning web search/fetch), `chatCore` re-plans with
+    `forceEmulate: true`, rebuilds the body and retries once — nobody has to delete provider
+    code. With no adapter providers configured, the original error is returned. Only non-2xx
+    responses are retried; an error inside an already-started 200 SSE stream cannot be replayed,
+    and a 200 that silently ignores the tool needs the deny-list above.
   - **Live probe (2026-10-26), Claude wire** — which upstreams really execute the
     Anthropic server tools when a Claude client hits their `/v1/messages`:
 
     | endpoint | `web_search_20250305` | `web_fetch_20250910` |
     |---|---|---|
     | `anthropic` | native | native |
-    | `ark-ap-provider` (Agent Plan, `/api/plan/v1/messages`) | **native** — `server_tool_use` + `web_search_tool_result`; also `web_search_20260209` | HTTP 400 `unsupported server tool web_fetch` |
-    | `volcengine-ark` (coding plan, `/api/coding/v1/messages`) | **native per docs**, but the account must activate 豆包搜索 Custom 版 (控制台 > 开通管理 > 应用组件库 > 豆包搜索); unactivated accounts get HTTP 403 `Access denied for web search … verify the activation status` | not offered |
+    | `ark-ap-provider` (Agent Plan, `/api/plan/v1/messages`) | **emulated by policy** — doubao ids execute `server_tool_use` natively, but `deepseek-v4.1-flash` answers 200 with client `tool_use` blocks; a provider-level whitelist cannot express that split | emulated |
+    | `volcengine-ark` (coding plan, `/api/coding/v1/messages`) | **emulated by policy** — 403 when 豆包搜索 is inactive, 200 + client `tool_use` when the model/account does not execute server tools | emulated |
     | `open-design` (`/v1/messages`, all Claude ids) | HTTP 400 `unsupported Responses tool type "web_search" … on Chat route` (also with `anthropic-beta: web-search-2025-03-05`, and on `/v1/responses` with the hosted tool) | HTTP 400, same |
 
     Doc reference for the coding plan (Claude wire):
     `console.volcengine.com/ark/region:cn-beijing/docs/coding-plan-personal-ai-claude-code.md`
     §"使用 Claude Code 的 Web Search 功能" — "通过 Messages API 接入的 Claude Code 也可原生使用 Web Search 功能".
 
-    The **Codex wire is a different mechanism and needs no fork config**: the
-    `coding-plan-personal-ai-codex.md` doc says "通过 Responses API 接入的 Codex 也可原生使用
-    Web Search 功能", i.e. the client's hosted `{ "type": "web_search" }` tool on
-    `POST /api/coding/v3/responses`. `resolveTransport(provider, "openai-responses")`
-    selects the matching transport, `sourceFormat === targetFormat` skips translation,
-    so the tool is forwarded verbatim. Same 豆包搜索 Custom 版 activation gate; the doc
-    also notes each search triggers an extra model call to summarize the results.
-    Doc: `console.volcengine.com/ark/region:cn-beijing/docs/coding-plan-personal-ai-codex.md`.
+    The **Codex wire is a different mechanism**: the coding-plan doc says "通过 Responses API
+    接入的 Codex 也可原生使用 Web Search 功能", i.e. the client's hosted
+    `{ "type": "web_search" }` tool on `POST /api/coding/v3/responses`.
+    `resolveTransport(provider, "openai-responses")` selects the matching transport and
+    `sourceFormat === targetFormat` skips translation. Probed 2026-10-26:
 
-    Both Ark providers declare on their **top-level `transport`** (that is what
-    `providers/index.js` publishes; a quirk on a `transports[]` entry is invisible):
-    `claudeSupportedToolTypes: ["web_search_20250305", "web_search_20260209"]`. `web_fetch`
-    stays out because neither endpoint offers it, so fetch emulates. Their Responses wire
-    stays native by default; an account without 豆包搜索 Custom activated hits the runtime
-    entitlement fallback. Open Design declares no Claude whitelist and adds
-    `responsesUnsupportedToolTypes: ["web_search", "web_search_preview", "web_fetch"]`, so
-    the adapter handles both of its client wires.
+    - `ark-ap-provider` `/api/plan/v3/responses`: **native** — `web_search_call` items in
+      `output`, on the same agent-plan account.
+    - `volcengine-ark` `/api/coding/v3/responses`: **silent ignore** — HTTP 200 without any
+      `web_search_call` (the model answers "I can't search the live web"), so it declares
+      `responsesUnsupportedToolTypes: ["web_search", "web_search_preview", "web_fetch"]`.
+    - `open-design` `/v1/responses`: HTTP 400, same deny-list.
+
+    The coding-plan doc also notes each native search triggers an extra model call to
+    summarize the results. Doc:
+    `console.volcengine.com/ark/region:cn-beijing/docs/coding-plan-personal-ai-codex.md`.
+
+    Neither Ark provider declares `claudeSupportedToolTypes` on the **top-level `transport`**
+    (that is what `providers/index.js` publishes; a quirk on a `transports[]` entry is
+    invisible). Their Claude wire always emulates. `ark-ap-provider` keeps its Responses wire
+    native; `volcengine-ark` declares the Responses deny-list above. DeepSeek is the only
+    remaining Claude whitelist in this repo: its Anthropic endpoint rejects custom tools
+    outright, so the list both preserves `web_search_*` and filters everything else.
 - `open-sse/services/serverToolEmulator.js` — detection, history downgrade, tool injection,
   the emulation loop and the client-facing SSE synthesizer:
   - Emulated rounds run upstream **non-streaming** (the loop buffers complete rounds), then the
@@ -186,6 +192,11 @@ Native support is a **per-wire** question, not a per-provider one:
     events, OpenAI chunks, Responses `response.completed`).
   - Client responses are synthesized in the source wire: Anthropic SSE/JSON for Claude
     clients, Responses events/JSON (`web_search_call` + `output_text`) for Codex.
+  - Result blocks use Anthropic's strict typed shapes, not loose variants:
+    `web_search_result` items carry `encrypted_content` (ZCode's Zod schema requires it),
+    `web_fetch_tool_result.content` is a `web_fetch_result` document
+    (`source: { type:"text", media_type:"text/plain", data }`), and failures use
+    `web_search_tool_result_error` / `web_fetch_tool_result_error` with `error_code`.
   - Replayed history blocks are downgraded to a plain tool loop per turn: Claude
     `server_tool_use` / `*_tool_result` blocks, and Responses `web_search_call` items
     (turned into an assistant text item). `srvtoolu_` ids are rewritten to `toolu_` so strict
@@ -281,8 +292,8 @@ conflicts, these are the only anchors to re-apply:
 | `open-sse/utils/stream.js` | ~25 lines | passthrough block: track an upstream `[DONE]`, aggregate Claude `content_block_delta`; `createPassthroughStreamWithLogger` gains `sourceFormat` |
 | `open-sse/handlers/chatCore/streamingHandler.js` | 1 line | pass `sourceFormat` as the 9th arg to `createPassthroughStreamWithLogger` |
 | `open-sse/providers/capabilities.js` | ~63 lines | fork-added `PROVIDER_CAPABILITIES` blocks (`ark-ap-provider`, `volcengine-ark`, `opendesign`) plus the `qwen3.8` pattern; keep the keys aligned with the alias the web path passes |
-| `open-sse/providers/registry/volcengine-ark.js` | ~22 lines (quirks + comments) | top-level `transport.quirks.claudeSupportedToolTypes`; Responses stays native by default |
-| `open-sse/providers/registry/ark-ap-provider.js` | ~20 lines | fork-only provider — `transport.quirks.claudeSupportedToolTypes` |
+| `open-sse/providers/registry/volcengine-ark.js` | ~10 lines (quirks + comments) | top-level `transport.quirks.responsesUnsupportedToolTypes`; no Claude whitelist (Claude wire always emulates) |
+| `open-sse/providers/registry/ark-ap-provider.js` | ~10 lines (comments only) | fork-only provider — no Claude whitelist; Responses stays native |
 
 `open-sse/providers/capabilities.js` is **not** zero-diff: the fork carries provider tables for
 `ark-ap-provider`, `volcengine-ark` and `opendesign`, plus a `qwen3.8` pattern. It is one of the

@@ -426,7 +426,7 @@ describe("handleChatCore server tool emulation (Web Tools Adapter)", () => {
           response: new Response(JSON.stringify({
             error: { message: "Access denied for web search, please verify the activation status of Doubao Search" },
           }), { status: 403, headers: { "content-type": "application/json" } }),
-          url: "https://ark.cn-beijing.volces.com/api/coding/v1/messages",
+          url: "https://api.deepseek.com/anthropic/v1/messages",
           headers: {},
           transformedBody: null,
         };
@@ -434,7 +434,7 @@ describe("handleChatCore server tool emulation (Web Tools Adapter)", () => {
       if (executedBodies.length === 2) {
         return {
           response: claudeJson([{ type: "tool_use", id: "toolu_1", name: "web_search", input: { query: "rust vs go" } }], "tool_use"),
-          url: "https://ark.cn-beijing.volces.com/api/coding/v1/messages",
+          url: "https://api.deepseek.com/anthropic/v1/messages",
           headers: {},
           transformedBody: null,
         };
@@ -453,7 +453,7 @@ describe("handleChatCore server tool emulation (Web Tools Adapter)", () => {
         stream: false,
         tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }],
       },
-      modelInfo: { provider: "volcengine-ark", model: "doubao-seed-2.1-pro" },
+      modelInfo: { provider: "deepseek", model: "deepseek-v4-pro" },
       credentials: { apiKey: "test-key", providerSpecificData: {} },
       log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), line: vi.fn(), tagForSession: () => "T" },
       connectionId: "test-conn",
@@ -468,7 +468,7 @@ describe("handleChatCore server tool emulation (Web Tools Adapter)", () => {
       executeServerTool: async () => ({ ok: true, data: { results: [{ title: "Rust vs Go", url: "https://x.io/a", snippet: "bench" }] } }),
       clientRawRequest: {
         endpoint: "/v1/messages",
-        body: { model: "ark/doubao-seed-2.1-pro" },
+        body: { model: "ds/deepseek-v4-pro" },
         headers: { accept: "application/json" },
       },
     });
@@ -500,7 +500,7 @@ describe("handleChatCore server tool emulation (Web Tools Adapter)", () => {
           response: new Response(JSON.stringify({
             error: { message: "Access denied for web search, verify the activation status" },
           }), { status: 403, headers: { "content-type": "application/json" } }),
-          url: "https://ark.cn-beijing.volces.com/api/coding/v3/responses",
+          url: "https://ark.cn-beijing.volces.com/api/plan/v3/responses",
           headers: {},
           transformedBody: null,
         };
@@ -511,7 +511,7 @@ describe("handleChatCore server tool emulation (Web Tools Adapter)", () => {
             type: "function_call", id: "fc_1", call_id: "call_1", name: "web_search",
             arguments: '{"query":"rust vs go"}', status: "completed",
           }]),
-          url: "https://ark.cn-beijing.volces.com/api/coding/v3/responses",
+          url: "https://ark.cn-beijing.volces.com/api/plan/v3/responses",
           headers: {},
           transformedBody: null,
         };
@@ -529,12 +529,12 @@ describe("handleChatCore server tool emulation (Web Tools Adapter)", () => {
 
     const result = await handleChatCore({
       body: {
-        model: "ark/doubao-seed-2.1-pro",
+        model: "ark-ap/deepseek-v4.1-flash",
         stream: false,
         tools: [{ type: "web_search" }],
         input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "rust vs go" }] }],
       },
-      modelInfo: { provider: "volcengine-ark", model: "doubao-seed-2.1-pro" },
+      modelInfo: { provider: "ark-ap-provider", model: "deepseek-v4.1-flash" },
       credentials: { apiKey: "test-key", providerSpecificData: {} },
       log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), line: vi.fn(), tagForSession: () => "T" },
       connectionId: "test-conn",
@@ -549,7 +549,7 @@ describe("handleChatCore server tool emulation (Web Tools Adapter)", () => {
       executeServerTool: async () => ({ ok: true, data: { results: [{ title: "Rust vs Go", url: "https://x.io/a", snippet: "bench" }] } }),
       clientRawRequest: {
         endpoint: "/v1/responses",
-        body: { model: "ark/doubao-seed-2.1-pro" },
+        body: { model: "ark-ap/deepseek-v4.1-flash" },
         headers: { accept: "application/json" },
       },
     });

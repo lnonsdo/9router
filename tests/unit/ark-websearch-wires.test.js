@@ -1,8 +1,13 @@
 // Ark exposes two independent web-search wires:
 //   • Claude / Messages  → /api/{coding,plan}/v1/messages  (Anthropic server tool)
 //   • Codex  / Responses → /api/{coding,plan}/v3/responses (hosted {type:"web_search"})
-// chatCore picks the transport whose format matches the client's sourceFormat, so a
-// Codex request is forwarded untranslated and never consults claudeSupportedToolTypes.
+// chatCore picks the transport whose format matches the client's sourceFormat.
+//
+// Post-probe policy (2026-10-26): neither Ark Claude transport declares native
+// server tools — the coding plan returns 403 or a client tool_use, and the agent
+// plan does the same for deepseek ids. On Responses, the agent plan executes the
+// hosted tool natively while the coding plan silently ignores it, so the latter
+// declares responsesUnsupportedToolTypes.
 import { describe, it, expect } from "vitest";
 import { PROVIDERS } from "../../open-sse/providers/index.js";
 import { resolveTransport } from "../../open-sse/services/provider.js";
@@ -18,13 +23,18 @@ describe("Ark web search: one provider, two wires", () => {
     expect(responses.baseUrl).not.toBe(claude.baseUrl);
   });
 
-  it.each(ARK_PROVIDERS)("%s whitelists Anthropic server tools on the published transport", (id) => {
-    // providers/index.js sets PROVIDERS[id] from the top-level `transport`; that
-    // is the object prepareClaudeRequest reads. A quirk placed on a transports[]
-    // entry would be invisible here.
-    expect(PROVIDERS[id].quirks.claudeSupportedToolTypes).toEqual([
-      "web_search_20250305",
-      "web_search_20260209",
+  it("declares native support per wire: no Claude whitelist, Responses differs", () => {
+    // providers/index.js publishes the top-level transport as PROVIDERS[id].
+    for (const id of ARK_PROVIDERS) {
+      expect(PROVIDERS[id].quirks?.claudeSupportedToolTypes, id).toBeUndefined();
+    }
+    // Agent Plan executes hosted web_search on /responses → native.
+    expect(PROVIDERS["ark-ap-provider"].quirks?.responsesUnsupportedToolTypes).toBeUndefined();
+    // Coding Plan silently ignores it → force emulation.
+    expect(PROVIDERS["volcengine-ark"].quirks.responsesUnsupportedToolTypes).toEqual([
+      "web_search",
+      "web_search_preview",
+      "web_fetch",
     ]);
   });
 

@@ -121,11 +121,19 @@ function serverToolResultToText(block) {
         lines.push(parts.join("\n"));
       } else if (item?.type === "text") {
         lines.push(item.text || "");
+      } else if (item?.type === "web_fetch_result") {
+        lines.push(String(item.content?.source?.data || item.content?.text || ""));
       } else if (item?.type === CLAUDE_BLOCK.TOOL_RESULT) {
         lines.push(serverToolResultToText(item));
       }
     }
     return lines.filter(Boolean).join("\n");
+  }
+  if (content?.type === "web_fetch_result") {
+    return String(content.content?.source?.data || content.content?.text || "");
+  }
+  if (content?.type === "web_search_tool_result_error" || content?.type === "web_fetch_tool_result_error") {
+    return `Web tool error: ${content.error_code || "unavailable"}`;
   }
   if (content?.type === CLAUDE_BLOCK.TOOL_RESULT) return serverToolResultToText(content);
   if (content?.type === "text") return content.text || "";
@@ -392,17 +400,20 @@ function formatFetchedPageText(text, url) {
   ].join("\n");
 }
 
-function errorResultBlock(kind, srvId, message) {
-  const resultType = kind === "web_fetch" ? CLAUDE_BLOCK.WEB_FETCH_TOOL_RESULT : CLAUDE_BLOCK.WEB_SEARCH_TOOL_RESULT;
-  return {
-    type: resultType,
-    tool_use_id: srvId,
-    content: {
-      type: CLAUDE_BLOCK.TOOL_RESULT,
+function errorResultBlock(kind, srvId) {
+  // Anthropic's error form is a typed object, not a tool_result wrapper — strict
+  // clients (e.g. ZCode's Zod schema) reject anything else.
+  if (kind === "web_fetch") {
+    return {
+      type: CLAUDE_BLOCK.WEB_FETCH_TOOL_RESULT,
       tool_use_id: srvId,
-      is_error: true,
-      content: [{ type: "text", text: message }],
-    },
+      content: { type: "web_fetch_tool_result_error", error_code: "unavailable" },
+    };
+  }
+  return {
+    type: CLAUDE_BLOCK.WEB_SEARCH_TOOL_RESULT,
+    tool_use_id: srvId,
+    content: { type: "web_search_tool_result_error", error_code: "unavailable" },
   };
 }
 
@@ -413,13 +424,25 @@ async function executeEmulatedTool({ kind, input, srvId, executeServerTool, log 
     const res = await executeServerTool({ kind, input: input || {} });
     if (res?.ok) {
       if (kind === "web_fetch") {
-        const text = String(res.data?.text || "") || "(empty page)";
+        const text = String(res.data?.text || "");
+        const url = String(input?.url || res.data?.url || "");
+        const clipped = truncateChars(text, WEB_FETCH_MAX_CHARS) || "(empty page)";
         return {
-          text: formatFetchedPageText(truncateChars(text, WEB_FETCH_MAX_CHARS), String(input?.url || res.data?.url || "")),
+          text: formatFetchedPageText(clipped, url),
+          // Anthropic shape: a web_fetch_result document, not a content array.
           block: {
             type: CLAUDE_BLOCK.WEB_FETCH_TOOL_RESULT,
             tool_use_id: srvId,
-            content: [{ type: "text", text: truncateChars(text, WEB_FETCH_MAX_CHARS) || "(empty page)" }],
+            content: {
+              type: "web_fetch_result",
+              url,
+              retrieved_at: new Date().toISOString(),
+              content: {
+                type: "document",
+                title: null,
+                source: { type: "text", media_type: "text/plain", data: clipped },
+              },
+            },
           },
         };
       }
@@ -433,6 +456,10 @@ async function executeEmulatedTool({ kind, input, srvId, executeServerTool, log 
             type: "web_search_result",
             title: String(r?.title || "Untitled"),
             url: String(r?.url || ""),
+            // Required by strict Anthropic SDK schemas (ZCode validates it as a
+            // non-empty string). Opaque to the client; history replay flattens
+            // the whole block, so a synthetic value is safe.
+            encrypted_content: `emu_content_${i}_${String(r?.url || "").replace(/[^a-zA-Z0-9]/g, "").slice(0, 32)}`,
             snippet: String(r?.snippet || ""),
             page_age: r?.published_at || undefined,
             encrypted_index: `emu_${i}`,
@@ -442,11 +469,11 @@ async function executeEmulatedTool({ kind, input, srvId, executeServerTool, log 
     }
     const errText = `Web tool "${kind}" failed: ${String(res?.error || "unavailable")}`;
     log?.warn?.("WEBTOOLS", errText);
-    return { text: errText, block: errorResultBlock(kind, srvId, errText) };
+    return { text: errText, block: errorResultBlock(kind, srvId) };
   } catch (e) {
     const errText = `Web tool "${kind}" threw: ${e?.message || e}`;
     log?.warn?.("WEBTOOLS", errText);
-    return { text: errText, block: errorResultBlock(kind, srvId, errText) };
+    return { text: errText, block: errorResultBlock(kind, srvId) };
   }
 }
 

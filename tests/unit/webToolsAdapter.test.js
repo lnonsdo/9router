@@ -162,34 +162,19 @@ describe("planServerToolEmulation — native only when the tool survives the pip
     expect(planServerToolEmulation(planArgs({ targetFormat: "claude", provider: "deepseek" }))).not.toBeNull();
   });
 
-  it("steps aside on Ark agent-plan for web_search (probed native) but emulates web_fetch", () => {
-    // Live probe 2026-10-26: ark-ap-provider executes web_search_20250305 and
-    // web_search_20260209 itself (server_tool_use + web_search_tool_result),
-    // while web_fetch_20250910 is rejected with HTTP 400.
+  it("emulates every Ark Claude request: native support is model-dependent", () => {
+    // 2026-10-26 probe: doubao ids execute server tools on the agent plan, but
+    // deepseek-v4.1-flash answers 200 with CLIENT tool_use blocks; the coding
+    // plan answers 403 (not activated) or the same client tool_use. A
+    // provider-level whitelist cannot express that split, so both Ark Claude
+    // wires emulate for every model.
     const searchOnly = { ...baseBody, tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }] };
-    const newerSearch = { ...baseBody, tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 3 }] };
-    expect(planServerToolEmulation(planArgs({ body: searchOnly, targetFormat: "claude", provider: "ark-ap-provider" }))).toBeNull();
-    expect(planServerToolEmulation(planArgs({ body: newerSearch, targetFormat: "claude", provider: "ark-ap-provider" }))).toBeNull();
-
+    for (const provider of ["ark-ap-provider", "volcengine-ark"]) {
+      expect(planServerToolEmulation(planArgs({ body: searchOnly, targetFormat: "claude", provider })), provider).not.toBeNull();
+    }
+    // web_fetch is not offered by either endpoint → emulates too.
     const fetchOnly = { ...baseBody, tools: [{ type: "web_fetch_20250910", name: "web_fetch" }] };
-    expect(planServerToolEmulation(planArgs({ body: fetchOnly, targetFormat: "claude", provider: "ark-ap-provider" }))).not.toBeNull();
-    // Both requested → partial whitelist coverage → emulate the whole set.
-    expect(planServerToolEmulation(planArgs({ targetFormat: "claude", provider: "ark-ap-provider" }))).not.toBeNull();
-  });
-
-  it("steps aside on the Ark coding-plan endpoint for web_search; Open Design still emulates", () => {
-    // Both Ark endpoints document native web search on the Messages API. The
-    // coding plan needs 豆包搜索 Custom activated first — until then the call
-    // answers 403 "Access denied for web search …", which is an account state,
-    // not a protocol limitation.
-    // open-design: HTTP 400 "unsupported Responses tool type … on Chat route".
-    const searchOnly = { ...baseBody, tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }] };
-    expect(planServerToolEmulation(planArgs({ body: searchOnly, targetFormat: "claude", provider: "volcengine-ark" }))).toBeNull();
-    expect(planServerToolEmulation(planArgs({ body: searchOnly, targetFormat: "claude", provider: "open-design" }))).not.toBeNull();
-
-    // web_fetch is not offered by either Ark endpoint → emulates.
-    const fetchOnly = { ...baseBody, tools: [{ type: "web_fetch_20250910", name: "web_fetch" }] };
-    for (const provider of ["volcengine-ark", "ark-ap-provider"]) {
+    for (const provider of ["ark-ap-provider", "volcengine-ark", "open-design"]) {
       expect(planServerToolEmulation(planArgs({ body: fetchOnly, targetFormat: "claude", provider })), provider).not.toBeNull();
     }
   });
@@ -242,11 +227,13 @@ describe("planServerToolEmulation — native only when the tool survives the pip
     expect(planServerToolEmulation(responsesArgs({ provider: "open-design" }))).not.toBeNull();
     // A Responses client routed to a Chat/Claude target always emulates.
     expect(planServerToolEmulation(responsesArgs({ provider: "open-design", targetFormat: "openai" }))).not.toBeNull();
-    // Native is the default on a same-format Responses request (no deny-list).
-    expect(planServerToolEmulation(responsesArgs({ provider: "volcengine-ark" }))).toBeNull();
+    // Coding plan silently ignores hosted tools → deny-list forces emulation.
+    expect(planServerToolEmulation(responsesArgs({ provider: "volcengine-ark" }))).not.toBeNull();
+    // Agent Plan executes them natively, and so does every unlisted provider.
+    expect(planServerToolEmulation(responsesArgs({ provider: "ark-ap-provider" }))).toBeNull();
     expect(planServerToolEmulation(responsesArgs({ provider: "kimi" }))).toBeNull();
     // Entitlement fallback forces emulation past that default.
-    expect(planServerToolEmulation(responsesArgs({ provider: "volcengine-ark", forceEmulate: true }))).not.toBeNull();
+    expect(planServerToolEmulation(responsesArgs({ provider: "ark-ap-provider", forceEmulate: true }))).not.toBeNull();
   });
 });
 
@@ -476,6 +463,9 @@ describe("runServerToolEmulation — openai target", () => {
     expect(blocks[0].id).toMatch(/^srvtoolu_[a-zA-Z0-9_]+$/);
     expect(blocks[1].tool_use_id).toBe(blocks[0].id);
     expect(blocks[1].content[0]).toMatchObject({ type: "web_search_result", title: "Rust vs Go", url: "https://x.io/a", snippet: "benchmark" });
+    // Required by strict Anthropic SDK schemas (ZCode validates it).
+    expect(typeof blocks[1].content[0].encrypted_content).toBe("string");
+    expect(blocks[1].content[0].encrypted_content.length).toBeGreaterThan(0);
     expect(blocks[2].text).toBe("Go wins on compile speed.");
     expect(result.claudeResponse.stop_reason).toBe("end_turn");
     // Client sees Anthropic semantics: final context size. The router's billed
@@ -517,7 +507,7 @@ describe("runServerToolEmulation — openai target", () => {
     expect(result.claudeResponse.content[1]).toMatchObject({ type: "web_fetch_tool_result", tool_use_id: result.claudeResponse.content[0].id });
   });
 
-  it("keeps the request alive when the emulated tool fails (error tool_result)", async () => {
+  it("keeps the request alive when the emulated tool fails (typed error result)", async () => {
     const { plan, translatedBody } = makePlan();
     const result = await runServerToolEmulation({
       firstResponse: json(openaiRound({
@@ -537,9 +527,8 @@ describe("runServerToolEmulation — openai target", () => {
     expect(result.ok).toBe(true);
     const resultBlock = result.claudeResponse.content[1];
     expect(resultBlock.type).toBe("web_search_tool_result");
-    expect(resultBlock.content.type).toBe("tool_result");
-    expect(resultBlock.content.is_error).toBe(true);
-    expect(resultBlock.content.content[0].text).toContain("no credentials");
+    expect(resultBlock.content).toEqual({ type: "web_search_tool_result_error", error_code: "unavailable" });
+    // The failure is still fed back to the model as text (fail-open).
     expect(translatedBody.messages[2].content).toContain("no credentials");
   });
 
@@ -738,6 +727,61 @@ describe("runServerToolEmulation — claude-compatible target", () => {
     });
     expect(result.ok).toBe(true);
     expect(result.claudeResponse.content.at(-1).text).toBe("openai-shaped final");
+  });
+
+  it("returns a schema-valid web_fetch_result document, not a content array", async () => {
+    const { plan, translatedBody } = makePlan();
+    const result = await runServerToolEmulation({
+      firstResponse: json(claudeMessage([{ type: "tool_use", id: "toolu_f1", name: "web_fetch", input: { url: "https://example.com" } }], "tool_use")),
+      plan,
+      translatedBody,
+      executeServerTool: async ({ kind }) => (
+        kind === "web_fetch"
+          ? { ok: true, data: { text: "Example Domain", url: "https://example.com" } }
+          : { ok: true, data: { results: [] } }
+      ),
+      runUpstream: () => json(claudeMessage([{ type: "text", text: "fetched" }])),
+      model: "deepseek-chat",
+      clientModel: "claude-sonnet-4-5",
+      targetFormat: "claude",
+      responseFormat: "claude",
+    });
+    expect(result.ok).toBe(true);
+    const block = result.claudeResponse.content.find(b => b.type === "web_fetch_tool_result");
+    expect(block.content).toMatchObject({
+      type: "web_fetch_result",
+      url: "https://example.com",
+      content: {
+        type: "document",
+        title: null,
+        source: { type: "text", media_type: "text/plain", data: "Example Domain" },
+      },
+    });
+    expect(typeof block.content.retrieved_at).toBe("string");
+    expect(Number.isNaN(Date.parse(block.content.retrieved_at))).toBe(false);
+  });
+
+  it("uses the typed error forms for failed web tools", async () => {
+    const { plan, translatedBody } = makePlan();
+    const result = await runServerToolEmulation({
+      firstResponse: json(claudeMessage([
+        { type: "tool_use", id: "toolu_s1", name: "web_search", input: { query: "q" } },
+        { type: "tool_use", id: "toolu_f1", name: "web_fetch", input: { url: "https://x.io" } },
+      ], "tool_use")),
+      plan,
+      translatedBody,
+      executeServerTool: async () => ({ ok: false, error: "no credentials" }),
+      runUpstream: () => json(claudeMessage([{ type: "text", text: "gave up" }])),
+      model: "deepseek-chat",
+      clientModel: "claude-sonnet-4-5",
+      targetFormat: "claude",
+      responseFormat: "claude",
+    });
+    expect(result.ok).toBe(true);
+    const search = result.claudeResponse.content.find(b => b.type === "web_search_tool_result");
+    const fetch = result.claudeResponse.content.find(b => b.type === "web_fetch_tool_result");
+    expect(search.content).toEqual({ type: "web_search_tool_result_error", error_code: "unavailable" });
+    expect(fetch.content).toEqual({ type: "web_fetch_tool_result_error", error_code: "unavailable" });
   });
 });
 
