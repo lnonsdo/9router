@@ -209,9 +209,29 @@ Native support is a **per-wire** question, not a per-provider one:
   - `max_uses` is honored with a hard cap; a failing tool execution surfaces as an error
     tool_result instead of aborting the request (fail-open). Mixed rounds (emulated + real client
     tools) hand the turn back to the client.
+  - Hardening pass (2026-10-26):
+    - **Budget cannot be inflated**: repeated declarations of one kind
+      (`web_search_20250305` + `web_search_20260209`) count once, per-tool `max_uses` is capped
+      at 16, and the total across kinds is capped at 16. The 120 s deadline is checked before
+      every tool call (not only after a round) and each provider call is raced against the
+      remaining budget, so one slow fetch cannot overshoot it.
+    - **Reasoning is replayed**: appended rounds keep the thinking blocks / `reasoning_content` /
+      Responses reasoning items the upstream just produced. Dropping them makes reasoning-first
+      backends (DeepSeek/Kimi thinking mode, Responses `store=false`) reject round 2.
+    - **Client tool calls stream their arguments**: `claudeMessageToSseBody` emits
+      `input_json_delta` for client `tool_use` too; otherwise SDK accumulators leave `input` as
+      `{}`. Emulated `server_tool_use` blocks echo the client's declared tool name, not the
+      de-collided upstream name (`web_search_emu`).
+    - **Unconfigured server tools are removed, not forwarded**: when emulation runs at all, every
+      `web_search*` / `web_fetch*` declaration is stripped. Leaving an unconfigured one behind
+      made the translator emit a parameterless function tool the client never declared.
+    - **A 2xx body carrying `error` is a failure**, not an empty answer; provider error text is
+      truncated and credential-masked before entering the model's context.
   - Search snippets and fetched page text are injected inside explicit
     `<web_search_results>` / `<web_fetch_result>` untrusted-content boundaries, because page
-    content is a prompt-injection channel.
+    content is a prompt-injection channel. The search query sits **inside** the boundary, and
+    any boundary tag inside injected content (title, URL, snippet, page text, query) is rewritten
+    to lookalike brackets so page content cannot close the data region early.
   - Usage is split: the client receives Anthropic semantics (last round's prompt size as
     `input_tokens`, summed `output_tokens`), while `result.billed` carries the cumulative
     tokens the router actually paid across every round for usage tracking.
@@ -220,12 +240,54 @@ Native support is a **per-wire** question, not a per-provider one:
   fallback. Each kind supports a **round-robin** toggle (same semantics as the capacity
   adapter's `roundRobin`): the starting provider rotates across executions to spread usage over
   the pool, while failures still fall through in list order.
+- `filterWebToolsAdapterForKey` (`src/sse/services/keyAccess.js`) — a restricted API key cannot
+  make the gateway spend a search/fetch provider outside its allow list. Pools are filtered per
+  request and a pool left empty is disabled (the model keeps its native tools). Same principle
+  as `filterAdapterModels` for the capacity adapter.
 - `src/lib/db/repos/settingsRepo.js` — `webToolsAdapter: { webSearch, webFetch }`, each
   `{ enabled, roundRobin, providers }`. Defaults to **disabled** with an empty pool.
 - Dashboard → Combo & Vision Adapter → **Web Tools Adapter**: per-kind enable toggle, round-robin
   toggle, provider pool with priority ordering and ready/needs-key badges.
-- Tests: `tests/unit/webToolsAdapter.test.js` (engine + bridge, incl. round-robin rotation),
-  `tests/unit/webToolsChatCore.test.js` (chatCore end-to-end for openai and claude targets).
+- Tests: `tests/unit/webToolsAdapter.test.js` (engine + bridge, incl. round-robin rotation and
+  the hardening cases), `tests/unit/webToolsChatCore.test.js` (chatCore end-to-end for openai
+  and claude targets), `tests/unit/webToolsKeyAccess.test.js` (restricted-key pool filtering),
+  `tests/unit/nonStreamingClientWire.test.js` (non-streaming cross-format pivot).
+
+**Non-streaming cross-format responses.** `translateNonStreamingResponse()` only lands on
+OpenAI Chat Completions. `pivotToClientWire()` in `nonStreamingHandler.js` converts once more
+when the client speaks Claude or Responses, so a non-streaming Claude/Codex request routed to a
+Gemini/Kiro/Claude target receives its own wire instead of a `chat.completion` body. This
+matters because a missing `stream` flag now means non-streaming (see the stream-default fix),
+which sends more cross-format traffic down the JSON path.
+
+**Known limitations / intentional non-goals** (decided 2026-10-26, not bugs to “fix” blindly):
+
+- **Only openai / claude / openai-responses targets are emulated.** Gemini-family
+  (gemini, vertex, antigravity, gemini-cli), kiro, ollama, cursor and commandcode have no
+  injection/round-append/response-parse lane. Their wires are substantial work, and no provider
+  connection in this deployment uses them — every active provider (ark-ap-provider,
+  codebuddy-cn, glm-start, open-design, qoder, qoder-cn, volcengine-ark) speaks one of the three
+  supported wires. On the unsupported targets server tools still traverse
+  claude→openai→target as parameterless function tools; that predates the adapter. Add a
+  Gemini lane only if a Claude/Codex client is actually routed to a Gemini-wire provider.
+- **Tool options are not forwarded**: `allowed_domains`, `blocked_domains`, `user_location`,
+  `max_content_tokens`, `citations`. Claude Code and ZCode send the bare server tool (no options),
+  and the eight search/fetch providers expose inconsistent knobs — passing them through would
+  imply guarantees that are not met. `WEB_FETCH_MAX_CHARS = 50000` is deliberate: ~12.5k tokens
+  per fetch, and 16 fetches already saturate a 200k context.
+- **`previous_response_id` is not supported for emulated Responses.** Codex uses `store:false`
+  with the full input replay; the synthesized response is non-background and has no server-side
+  state to continue from.
+- **No client-disconnect abort for tool execution.** The 120 s deadline plus the per-call race
+  bound the wait; a cancelled request can still let one provider call finish (and bill). Threading
+  an abort signal through every search/fetch provider is disproportionate to that cost.
+- **Per-round observability is intentionally coarse.** `EMU:Nr` on the done line is the signal;
+  per-round request bodies are not persisted (each one carries the whole accumulated prompt) and
+  `billed` counts input/output only — cache tokens are not folded in.
+- **`snippet` stays on `web_search_result`** (not an Anthropic schema field) because history
+  downgrade uses it to rebuild the result text; `encrypted_index` was removed as pure noise. The
+  only residual risk is a mid-session combo fallback to native Anthropic replaying these blocks;
+  if that ever 400s, scrub `snippet` in the passthrough normalizer rather than dropping it here.
 
 ### 📦 Provider / model catalogue maintenance
 Fork-local model matrix and alias fixes; these deliberately diverge from upstream and are the
@@ -290,13 +352,17 @@ conflicts, these are the only anchors to re-apply:
 | Upstream file | Footprint | Anchor |
 |---|---|---|
 | `open-sse/handlers/chatCore.js` | ~80 lines | `handleChatCore` signature (`webToolsAdapter`, `executeServerTool` params); plan block right after the modality prefetch; `injectEmulatedTools` right after `dedupeTools`; the `if (emuPlan)` branch right after `sharedCtx`; the web-tool access-error fallback inside `if (!providerResponse.ok)` |
-| `src/sse/handlers/chat.js` | 8 lines | import + `webToolsAdapter`/`executeServerTool` params in the `handleChatCore({…})` call |
+| `open-sse/handlers/chatCore/nonStreamingHandler.js` | ~25 lines | `pivotToClientWire()` export + the single call right after `translateNonStreamingResponse()`; the `isResponsesResponse` check also accepts an `output` array |
+| `src/sse/handlers/chat.js` | ~10 lines | import + `webToolsAdapter`/`executeServerTool` params in the `handleChatCore({…})` call; `filterWebToolsAdapterForKey(await getKeyAccessContext(request), …)` around the adapter config |
+| `src/sse/services/keyAccess.js` | ~30 lines | `filterWebToolsAdapterForKey` right before `filterModelsListForKey` |
+| `open-sse/translator/formats/claude.js` | 2 lines | orphan-result cleanup also drops `WEB_FETCH_TOOL_RESULT` (`droppedServerToolUseIds` loop) |
+| `src/shared/utils/ssrfGuard.js` | 8 lines | `assertHttpScheme()` used by `assertPublicUrl` / `assertPublicUrlResolved` — `file:`/`data:`/`gopher:` parse with an empty hostname and slipped past the host checks |
 | `src/lib/db/repos/settingsRepo.js` | 10 lines | `DEFAULT_SETTINGS.webToolsAdapter` (sits next to `capacityAdapter`) |
 | `src/app/(dashboard)/dashboard/combos/page.js` | ~25 lines | import, one `useState`, one normalize call in `fetchData`, one save handler, one render line |
 | `open-sse/translator/schema/blocks.js` | 1 line | `CLAUDE_BLOCK.WEB_FETCH_TOOL_RESULT` |
 | `open-sse/utils/stream.js` | ~25 lines | passthrough block: track an upstream `[DONE]`, aggregate Claude `content_block_delta`; `createPassthroughStreamWithLogger` gains `sourceFormat` |
 | `open-sse/handlers/chatCore/streamingHandler.js` | 1 line | pass `sourceFormat` as the 9th arg to `createPassthroughStreamWithLogger` |
-| `open-sse/providers/capabilities.js` | ~63 lines | fork-added `PROVIDER_CAPABILITIES` blocks (`ark-ap-provider`, `volcengine-ark`, `opendesign`) plus the `qwen3.8` pattern; keep the keys aligned with the alias the web path passes |
+| `open-sse/providers/capabilities.js` | ~65 lines | fork-added `PROVIDER_CAPABILITIES` blocks (`ark-ap-provider`, `volcengine-ark`, `open-design`) plus the `qwen3.8` pattern. The table is keyed by **provider id**, but combo/capacity paths spell this provider with its alias, so `PROVIDER_CAPABILITIES.opendesign` points at the same object |
 | `open-sse/providers/registry/volcengine-ark.js` | ~10 lines (quirks + comments) | top-level `transport.quirks.responsesUnsupportedToolTypes`; no Claude whitelist (Claude wire always emulates) |
 | `open-sse/providers/registry/ark-ap-provider.js` | ~10 lines (comments only) | fork-only provider — no Claude whitelist; Responses stays native |
 
@@ -304,6 +370,13 @@ conflicts, these are the only anchors to re-apply:
 `ark-ap-provider`, `volcengine-ark` and `opendesign`, plus a `qwen3.8` pattern. It is one of the
 highest-churn upstream files (60 commits since 2026-07-01), so a merge will usually conflict
 there; re-apply the alias-keyed fork blocks on top of upstream's table.
+
+**Provider aliases are a public namespace — never move one.** A registry `alias` is what saved
+combos, API-key allow lists and CLI configs contain (`opendesign/…`, `qd/…`), and
+`PROVIDER_MODELS` is keyed by it. `open-design` and `qoder`/`qoder-cn` keep their historical
+aliases (`opendesign`, `qd`, `qdcn`); the official ids resolve through `id`/`aliases[]` anyway.
+`node tests/__baseline__/verify-alias.mjs` must print "byte-for-byte equal" after any registry
+change.
 
 Also worth knowing when syncing: `GET /v1/models` on open-design is **account-scoped** — it
 lists what the current membership tier is entitled to, not the provider's full catalogue.
