@@ -100,15 +100,31 @@ Claude-compatible endpoints get the tools emulated in the gateway instead of sil
   "will the server tool actually reach the upstream?":
   - native passthrough (`anthropic`, `anthropic-compatible-*`) → the tool rides through;
   - a Claude transport whose `quirks.claudeSupportedToolTypes` whitelists **every**
-    requested type (DeepSeek's Anthropic endpoint today) → `prepareClaudeRequest`
-    forwards it;
+    requested type (DeepSeek's Anthropic endpoint, and now `ark-ap-provider` for
+    `web_search`) → `prepareClaudeRequest` forwards it;
   - everything else emulates. This matters because `prepareClaudeRequest` strips
     non-function tools for every other provider, so a Claude-format wire alone is
-    not native support: Ark and Open Design have no whitelist, and the model's
-    `search` flag being true (all Claude/GPT ids resolve that way) does not change
-    the fact that the tool would be deleted before dispatch. Partial whitelist
-    coverage also emulates, since the uncovered tool would otherwise vanish.
+    not native support: the model's `search` flag being true (all Claude/GPT ids
+    resolve that way) does not change the fact that the tool would be deleted
+    before dispatch. Partial whitelist coverage also emulates, since the uncovered
+    tool would otherwise vanish.
   - The OpenAI wire has no Anthropic server tool type at all, so it always emulates.
+  - **Live probe (2026-10-26)** — which upstreams really execute the tools:
+
+    | endpoint | `web_search_20250305` | `web_fetch_20250910` |
+    |---|---|---|
+    | `anthropic` | native | native |
+    | `ark-ap-provider` (Agent Plan, `/api/plan/v1/messages`) | **native** — `server_tool_use` + `web_search_tool_result`; also `web_search_20260209` | HTTP 400 `unsupported server tool web_fetch` |
+    | `volcengine-ark` (coding plan) | HTTP 403 `Access denied for web search … verify the activation status` (type understood, account not entitled) | untested |
+    | `open-design` (`/v1/messages`, all Claude ids) | HTTP 400 `unsupported Responses tool type "web_search" … on Chat route` | HTTP 400, same |
+
+    Recorded in the registry: `ark-ap-provider` gains
+    `quirks.claudeSupportedToolTypes: ["web_search_20250305", "web_search_20260209"]`
+    (top-level `transport`, which is what `providers/index.js` publishes); `web_fetch`
+    stays out so it keeps emulating, and a request asking for both emulates the whole set.
+    The other two carry comments explaining why they must not be whitelisted — the coding-plan
+    403 is an entitlement gate that would surface as a hard error rather than fall back to
+    emulation, and open-design normalizes every request onto its internal Chat route.
 - `open-sse/services/serverToolEmulator.js` — detection, history downgrade, tool injection,
   the emulation loop and the client-facing SSE synthesizer:
   - Emulated rounds run upstream **non-streaming** (the loop buffers complete rounds), then the

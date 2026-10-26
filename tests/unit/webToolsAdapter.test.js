@@ -159,12 +159,34 @@ describe("planServerToolEmulation — native only when the tool survives the pip
     expect(planServerToolEmulation(planArgs({ targetFormat: "claude", provider: "deepseek" }))).not.toBeNull();
   });
 
-  it("emulates for Ark / Open Design even though their model ids look search-capable", () => {
-    // These providers have no claudeSupportedToolTypes whitelist, so
-    // prepareClaudeRequest strips the server tool before dispatch. `search`
-    // (true for open-design's Claude/GPT model ids) must not be read as
-    // "the upstream executes it" — doing so silently loses web access.
-    for (const provider of ["volcengine-ark", "ark-ap-provider", "open-design"]) {
+  it("steps aside on Ark agent-plan for web_search (probed native) but emulates web_fetch", () => {
+    // Live probe 2026-10-26: ark-ap-provider executes web_search_20250305 and
+    // web_search_20260209 itself (server_tool_use + web_search_tool_result),
+    // while web_fetch_20250910 is rejected with HTTP 400.
+    const searchOnly = { ...baseBody, tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }] };
+    const newerSearch = { ...baseBody, tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 3 }] };
+    expect(planServerToolEmulation(planArgs({ body: searchOnly, targetFormat: "claude", provider: "ark-ap-provider" }))).toBeNull();
+    expect(planServerToolEmulation(planArgs({ body: newerSearch, targetFormat: "claude", provider: "ark-ap-provider" }))).toBeNull();
+
+    const fetchOnly = { ...baseBody, tools: [{ type: "web_fetch_20250910", name: "web_fetch" }] };
+    expect(planServerToolEmulation(planArgs({ body: fetchOnly, targetFormat: "claude", provider: "ark-ap-provider" }))).not.toBeNull();
+    // Both requested → partial whitelist coverage → emulate the whole set.
+    expect(planServerToolEmulation(planArgs({ targetFormat: "claude", provider: "ark-ap-provider" }))).not.toBeNull();
+  });
+
+  it("emulates for Open Design and the Ark coding-plan endpoint (probed unsupported / gated)", () => {
+    // open-design: HTTP 400 "unsupported Responses tool type … on Chat route".
+    // volcengine-ark coding plan: type understood but the account is not
+    // entitled (403), and a hard 403 would not fail over to emulation.
+    const searchOnly = { ...baseBody, tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }] };
+    for (const provider of ["open-design", "volcengine-ark"]) {
+      const plan = planServerToolEmulation(planArgs({ body: searchOnly, targetFormat: "claude", provider }));
+      expect(plan, provider).not.toBeNull();
+    }
+  });
+
+  it("emulates for providers whose model ids look search-capable but declare nothing", () => {
+    for (const provider of ["open-design", "volcengine-ark", "ark-ap-provider"]) {
       const plan = planServerToolEmulation(planArgs({ targetFormat: "claude", provider }));
       expect(plan, provider).not.toBeNull();
       expect(plan.tools.map(t => t.kind), provider).toEqual(["web_search", "web_fetch"]);

@@ -21,6 +21,20 @@ export default {
   transport: {
     baseUrl: "https://ark.cn-beijing.volces.com/api/plan/v3/chat/completions",
     // forceStream: true,
+    quirks: {
+      // Probed live 2026-10-26 (agent-plan account): the Anthropic-messages
+      // surface executes built-in web search itself and answers with
+      // server_tool_use + web_search_tool_result — for doubao AND deepseek
+      // model ids. Declaring the whitelist makes prepareClaudeRequest forward
+      // these types instead of stripping them, so the Web Tools Adapter steps
+      // aside for web_search on the claude transport.
+      // web_fetch_20250910 is NOT supported (HTTP 400 "unsupported server tool
+      // web_fetch"), so it stays out and keeps emulating — partial coverage is
+      // intentional, and the adapter emulates the whole set when both are asked
+      // for. Must live on the top-level transport: providers/index.js builds
+      // PROVIDERS[id] from `transport` and only attaches `transports` alongside.
+      claudeSupportedToolTypes: ["web_search_20250305", "web_search_20260209"],
+    },
   },
   transports: [
     {

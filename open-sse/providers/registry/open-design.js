@@ -5,6 +5,12 @@
 //   POST /v1/messages           (x-api-key or Bearer + anthropic-version)
 //   GET  /v1/models             (entitled catalogue, Bearer)
 // Every id answers on all three surfaces and streams, tool calls round-trip.
+// Anthropic server tools do NOT: probed 2026-10-26 on /v1/messages with
+// web_search_20250305 / web_fetch_20250910 (and on /v1/responses with the
+// hosted {type:"web_search"}), every Claude id answers HTTP 400
+// "unsupported Responses tool type … on Chat route" — the gateway normalizes
+// onto its internal Chat route. Do not add claudeSupportedToolTypes here; the
+// Web Tools Adapter must emulate for this provider.
 // Quota data (credits windows + wallet balance) lives behind the console
 // session cookie — see getOpenDesignUsage() in services/usage/misc.js.
 export default {
