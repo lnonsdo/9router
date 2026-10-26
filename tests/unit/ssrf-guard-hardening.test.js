@@ -145,3 +145,16 @@ describe("fetchPublic: redirect-target re-validation from #3714", () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 });
+
+describe("non-http(s) schemes", () => {
+  it("rejects schemes whose host checks cannot apply", () => {
+    for (const url of ["file:///etc/passwd", "data:text/plain,hi", "gopher://example.com/1"]) {
+      expect(() => assertPublicUrl(url)).toThrow(/only http\(s\)/);
+    }
+  });
+
+  it("rejects them on the DNS-resolving path too, before any lookup", async () => {
+    await expect(assertPublicUrlResolved("file:///etc/passwd")).rejects.toThrow(/only http\(s\)/);
+    await expect(assertPublicUrlResolved("ftp://example.com/x")).rejects.toThrow(/only http\(s\)/);
+  });
+});

@@ -157,10 +157,20 @@ function isBlockedHost(host) {
   return false;
 }
 
+// Only http(s) is fetchable. `file:`, `data:`, `gopher:` and friends parse with
+// an empty hostname, so the host checks below cannot classify them — a fetcher
+// that honours the scheme would read local files or speak another protocol.
+function assertHttpScheme(parsed) {
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("Blocked URL: only http(s) is allowed");
+  }
+}
+
 // Throw if URL targets a non-public host by literal hostname/IP alone (no DNS
 // resolution — see assertPublicUrlResolved for that). Caller should map to 400.
 export function assertPublicUrl(rawUrl) {
   const parsed = new URL(rawUrl);
+  assertHttpScheme(parsed);
   const host = normalizeHost(parsed.hostname);
   if (isBlockedHost(host)) throw new Error("Blocked URL: internal host");
 }
@@ -171,6 +181,7 @@ export function assertPublicUrl(rawUrl) {
 // pointed at 127.0.0.1) is rejected too, not just IPs typed directly into the URL.
 export async function assertPublicUrlResolved(rawUrl) {
   const parsed = new URL(rawUrl);
+  assertHttpScheme(parsed);
   const host = normalizeHost(parsed.hostname);
   if (isBlockedHost(host)) throw new Error("Blocked URL: internal host");
 
