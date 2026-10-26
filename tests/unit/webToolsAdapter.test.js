@@ -1105,3 +1105,50 @@ describe("hardening — mixed native + emulated tool types", () => {
     expect(types).not.toContain("web_fetch_20250910");
   });
 });
+
+describe("search result excerpts", () => {
+  const run = async (results) => {
+    const plan = planServerToolEmulation({
+      body: baseBody, sourceFormat: "claude", targetFormat: "openai", provider: "openrouter", adapterConfig,
+    });
+    const translatedBody = { tools: [], messages: [{ role: "user", content: "q" }] };
+    injectEmulatedTools(translatedBody, plan, "openai");
+    const result = await runServerToolEmulation({
+      firstResponse: json(openaiRound({
+        content: null,
+        tool_calls: [{ id: "call_1", type: "function", function: { name: "web_search", arguments: '{"query":"q"}' } }],
+        finish_reason: "tool_calls",
+      })),
+      plan,
+      translatedBody,
+      executeServerTool: async () => ({ ok: true, data: { results } }),
+      runUpstream: () => json(openaiRound({ content: "ok" })),
+      model: "m", clientModel: "claude-sonnet-4-5", targetFormat: "openai", responseFormat: "openai",
+    });
+    return { modelText: translatedBody.messages[2].content, block: result.claudeResponse.content[1].content[0] };
+  };
+
+  it("keeps a long Tavily snippet instead of cutting it at 300 characters", async () => {
+    const long = "T".repeat(600);
+    const { modelText } = await run([{ title: "t", url: "https://x.io/a", snippet: long }]);
+    expect(modelText).toContain(long);
+  });
+
+  it("extends a short Exa highlight with the extracted page text", async () => {
+    const page = `PAGE BODY ${"x".repeat(500)}`;
+    const { modelText, block } = await run([{
+      title: "t", url: "https://x.io/b", snippet: "one-line highlight",
+      content: { format: "text", text: page },
+    }]);
+    expect(modelText).toContain("one-line highlight");
+    expect(modelText).toContain("PAGE BODY");
+    // The same excerpt is what a replayed turn sends back to the model.
+    expect(block.snippet).toContain("PAGE BODY");
+  });
+
+  it("clips the excerpt at 800 characters", async () => {
+    const { modelText } = await run([{ title: "t", url: "https://x.io/c", snippet: "y".repeat(2000) }]);
+    expect(modelText).toContain(`${"y".repeat(800)}…`);
+    expect(modelText).not.toContain("y".repeat(801));
+  });
+});

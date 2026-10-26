@@ -54,6 +54,8 @@ const SERVER_TOOL_KINDS = [
 ];
 
 const WEB_SEARCH_MAX_RESULTS = 8;   // per page, mirrors Anthropic's small default page
+const WEB_SEARCH_SNIPPET_CHARS = 800;  // model-visible excerpt per result
+const WEB_SEARCH_SHORT_SNIPPET = 400;  // below this, append the provider's page text
 const WEB_FETCH_MAX_CHARS = 50000;  // rough stand-in for Anthropic's max_content_tokens
 const DEFAULT_MAX_USES_PER_TOOL = 5;
 const MAX_USES_PER_TOOL = 16;
@@ -418,13 +420,30 @@ function neutralizeBoundary(text) {
   return s;
 }
 
+// What the model gets to judge a result, and what the client keeps for history
+// replay. Providers differ: Tavily returns a paragraph in `snippet`, while Exa
+// returns one relevance-picked highlight plus the extracted page text in
+// `content.text`. A one-line teaser is not enough to judge a result, so a short
+// snippet is extended with the page text before the whole thing is clipped.
+function resultSnippet(r) {
+  const snippet = String(r?.snippet || "").trim();
+  const pageText = String(r?.content?.text || "").trim();
+  const text = snippet.length >= WEB_SEARCH_SHORT_SNIPPET || !pageText
+    ? snippet
+    : `${snippet}${snippet ? "\n" : ""}${pageText}`;
+  return text.length > WEB_SEARCH_SNIPPET_CHARS
+    ? `${text.slice(0, WEB_SEARCH_SNIPPET_CHARS)}…`
+    : text;
+}
+
 function formatSearchResultsText(results, query) {
   if (!results.length) return "No results found.";
   const body = results.map((r, i) => {
     const title = neutralizeBoundary(r?.title || "Untitled");
     const url = neutralizeBoundary(r?.url || "");
     const line = `${i + 1}. [${title}](${url})${r?.published_at ? ` (published: ${neutralizeBoundary(r.published_at)})` : ""}`;
-    const snippet = r?.snippet ? `\n   ${neutralizeBoundary(String(r.snippet).slice(0, 300))}` : "";
+    const snippetText = resultSnippet(r);
+    const snippet = snippetText ? `\n   ${neutralizeBoundary(snippetText)}` : "";
     return line + snippet;
   }).join("\n");
   // The query is model-authored and sits INSIDE the boundary: a query of
@@ -541,7 +560,9 @@ async function executeEmulatedTool({ kind, input, srvId, executeServerTool, log,
             // non-empty string). Opaque to the client; history replay flattens
             // the whole block, so a synthetic value is safe.
             encrypted_content: `emu_content_${i}_${String(r?.url || "").replace(/[^a-zA-Z0-9]/g, "").slice(0, 32)}`,
-            snippet: String(r?.snippet || ""),
+            // Same excerpt the model saw, so a replayed turn does not fall back
+            // to a one-line teaser.
+            snippet: resultSnippet(r),
             page_age: r?.published_at || undefined,
           })),
         },

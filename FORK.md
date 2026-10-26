@@ -202,6 +202,12 @@ Native support is a **per-wire** question, not a per-provider one:
     `web_fetch_tool_result.content` is a `web_fetch_result` document
     (`source: { type:"text", media_type:"text/plain", data }`), and failures use
     `web_search_tool_result_error` / `web_fetch_tool_result_error` with `error_code`.
+  - Search excerpts are built for the model, not copied from `snippet`: up to 800 chars per
+    result. When the provider's `snippet` is shorter than 400 chars (Exa returns a single
+    relevance-picked highlight) the provider's extracted page text (`content.text`) is appended,
+    so the model can actually judge the result. The same excerpt is stored on the result block,
+    so a replayed turn keeps it instead of falling back to a one-line teaser. Cost: 8 results ×
+    800 chars ≈ 1.6k tokens per search round.
   - Replayed history blocks are downgraded to a plain tool loop per turn: Claude
     `server_tool_use` / `*_tool_result` blocks, and Responses `web_search_call` items
     (turned into an assistant text item). `srvtoolu_` ids are rewritten to `toolu_` so strict
