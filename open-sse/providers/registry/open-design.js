@@ -10,10 +10,10 @@
 // hosted {type:"web_search"}), every Claude id answers HTTP 400
 // "unsupported Responses tool type … on Chat route" — the gateway normalizes
 // onto its internal Chat route. Do not add claudeSupportedToolTypes here; the
-// Web Tools Adapter emulates for **Claude clients**. Responses clients are a
-// different story: their transport matches by format, so translation is skipped
-// and the hosted tool reaches this gateway untouched — the adapter does not
-// cover Responses sources, so they surface the upstream 400 as-is.
+// Web Tools Adapter emulates for **both** client wires. Claude clients emulate
+// because the whitelist is absent; Responses clients emulate because of the
+// explicit deny-list on the transport below (their hosted tool would otherwise
+// be forwarded verbatim and 400).
 // Quota data (credits windows + wallet balance) lives behind the console
 // session cookie — see getOpenDesignUsage() in services/usage/misc.js.
 export default {
@@ -54,6 +54,12 @@ export default {
   transport: {
     baseUrl: "https://amr-link.open-design.ai/v1/chat/completions",
     validateUrl: "https://amr-link.open-design.ai/v1/models",
+    quirks: {
+      // Responses clients: the hosted server tool is normally forwarded verbatim,
+      // so declare it here to make the adapter emulate up front instead of
+      // burning a request on the gateway's 400.
+      responsesUnsupportedToolTypes: ["web_search", "web_search_preview", "web_fetch"],
+    },
   },
   // Multi-endpoint: pick the transport matching the client sourceFormat to skip
   // translation. /v1/messages is a real Anthropic surface: it takes the native

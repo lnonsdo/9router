@@ -33,7 +33,7 @@ import { stripUnsupportedModalities } from "../translator/concerns/modality.js";
 import { prefetchRemoteImages } from "../translator/concerns/prefetch.js";
 import { defaultClaudeToolType, shouldDefaultClaudeToolType } from "../translator/concerns/toolCall.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
-import { planServerToolEmulation, injectEmulatedTools } from "../services/serverToolEmulator.js";
+import { planServerToolEmulation, injectEmulatedTools, isWebToolAccessError } from "../services/serverToolEmulator.js";
 import { buildEmulatedResponse, runEmulatedExchange } from "../services/webToolsResponse.js";
 import { saveUsageStats, formatDoneLine } from "./chatCore/requestDetail.js";
 
@@ -520,30 +520,99 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   // Provider returned error
   if (!providerResponse.ok) {
-    trackPendingRequest(model, provider, connectionId, false, true);
     const { statusCode, message, resetsAtMs } = await parseUpstreamError(providerResponse, executor);
-    appendRequestLog({ model, provider, connectionId, status: `FAILED ${statusCode}` }).catch(() => { });
-    saveRequestDetail(buildRequestDetail({
-      provider, model, connectionId, sessionId: sessionSeed,
-      latency: { ttft: 0, total: Date.now() - requestStartTime },
-      tokens: { prompt_tokens: 0, completion_tokens: 0 },
-      request: extractRequestConfig(body, stream),
-      providerRequest: finalBody || translatedBody || null,
-      response: { error: message, status: statusCode, thinking: null },
-      pxpipe: pxpipeSummary,
-      status: "error"
-    })).catch(() => { });
+    // Remember whether emulation was already engaged before this error: the
+    // fallback below only exists for the native path, and an emulated attempt
+    // that fails must still surface its own error instead of falling through.
+    const planBeforeFallback = !!emuPlan;
 
-    const errMsg = formatProviderError(new Error(message), provider, model, statusCode);
-    if (log?.errorLine) {
-      const urlStr = providerUrl ? `\n    URL: ${providerUrl}` : "";
-      log.errorLine(reqTag, "✗", `ERROR ${statusCode} · ${provider}/${model} · ${Date.now() - requestStartTime}ms${urlStr}\n    ${errMsg}`);
+    // A provider can declare native server tools yet deny them to this account
+    // (Ark coding plan without 豆包搜索). Re-plan with emulation and retry once
+    // instead of making the user delete the provider's whitelist.
+    if (!emuPlan && webToolsAdapter && executeServerTool && isWebToolAccessError(statusCode, message)) {
+      try {
+        const fallbackPlan = planServerToolEmulation({
+          body, sourceFormat, targetFormat, provider,
+          adapterConfig: webToolsAdapter, forceEmulate: true,
+        });
+        if (fallbackPlan) {
+          let fallbackBody = translateRequest(sourceFormat, targetFormat, upstreamModel, fallbackPlan.degradedBody, false, credentials, provider, reqLogger, stripList, connectionId, clientTool);
+          if (fallbackBody) {
+            toolNameMap = fallbackBody._toolNameMap;
+            delete fallbackBody._toolNameMap;
+            customToolNames = fallbackBody._customToolNames;
+            delete fallbackBody._customToolNames;
+            fallbackBody.model = stripThinkingSuffix(upstreamModel);
+            stripContinuityFields(fallbackBody);
+            if (Array.isArray(fallbackBody.tools)) {
+              fallbackBody.tools = dedupeTools(fallbackBody.tools, { clientTool, model }).tools;
+            }
+            fallbackBody.stream = false;
+            injectEmulatedTools(fallbackBody, fallbackPlan, targetFormat);
+            // Optional savers are skipped on this retry path; re-apply the
+            // user-authored prompt so behavior does not depend on the fallback.
+            if (customPromptEnabled) injectCustomPrompt(fallbackBody, targetFormat, customPrompt);
+            if (shouldDefaultClaudeToolType(provider, targetFormat, fallbackBody.tools, PROVIDERS)) {
+              fallbackBody.tools = defaultClaudeToolType(fallbackBody.tools);
+            }
+
+            const retry = await executor.execute({
+              model,
+              body: fallbackBody,
+              stream: false,
+              credentials,
+              providerSessionId: sessionSeed,
+              clientTool,
+              signal: streamController.signal,
+              log,
+              proxyOptions,
+              providerOverrides,
+            });
+            if (retry.response?.ok) {
+              emuPlan = fallbackPlan;
+              translatedBody = fallbackBody;
+              finalBody = retry.transformedBody;
+              providerResponse = retry.response;
+              providerUrl = retry.url;
+              providerResponseFormat = retry.responseFormat || targetFormat;
+              stream = false;
+              reqLogger.logTargetRequest(retry.url, retry.headers, fallbackBody);
+              log?.warn?.("WEBTOOLS", `native web tool denied (${statusCode}); retrying via emulation`);
+            } else {
+              log?.warn?.("WEBTOOLS", `emulation retry after ${statusCode} failed (${retry.response?.status || "?"})`);
+            }
+          }
+        }
+      } catch (e) {
+        log?.warn?.("WEBTOOLS", `emulation retry after ${statusCode} threw: ${e?.message || e}`);
+      }
     }
-    reqLogger.logError(new Error(message), finalBody || translatedBody);
-    return createErrorResult(statusCode, errMsg, resetsAtMs, upstreamResponseHeaders(providerResponse.headers));
+
+    if (planBeforeFallback || !emuPlan) {
+      trackPendingRequest(model, provider, connectionId, false, true);
+      appendRequestLog({ model, provider, connectionId, status: `FAILED ${statusCode}` }).catch(() => { });
+      saveRequestDetail(buildRequestDetail({
+        provider, model, connectionId, sessionId: sessionSeed,
+        latency: { ttft: 0, total: Date.now() - requestStartTime },
+        tokens: { prompt_tokens: 0, completion_tokens: 0 },
+        request: extractRequestConfig(body, stream),
+        providerRequest: finalBody || translatedBody || null,
+        response: { error: message, status: statusCode, thinking: null },
+        pxpipe: pxpipeSummary,
+        status: "error"
+      })).catch(() => { });
+
+      const errMsg = formatProviderError(new Error(message), provider, model, statusCode);
+      if (log?.errorLine) {
+        const urlStr = providerUrl ? `\n    URL: ${providerUrl}` : "";
+        log.errorLine(reqTag, "✗", `ERROR ${statusCode} · ${provider}/${model} · ${Date.now() - requestStartTime}ms${urlStr}\n    ${errMsg}`);
+      }
+      reqLogger.logError(new Error(message), finalBody || translatedBody);
+      return createErrorResult(statusCode, errMsg, resetsAtMs, upstreamResponseHeaders(providerResponse.headers));
+    }
   }
 
-  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, sessionId: sessionSeed, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log };
+  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, sessionId: sessionSeed, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log, sourceFormat };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
   const trackDone = () => trackPendingRequest(model, provider, connectionId, false);
 

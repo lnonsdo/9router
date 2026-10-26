@@ -26,7 +26,7 @@
  * to the chatCore caller which degrades to the plain error path.
  */
 import { FORMATS } from "../translator/formats.js";
-import { CLAUDE_BLOCK, OPENAI_BLOCK, ROLE } from "../translator/schema/index.js";
+import { CLAUDE_BLOCK, OPENAI_BLOCK, RESPONSES_ITEM, ROLE } from "../translator/schema/index.js";
 import { CLAUDE_STOP } from "../translator/schema/finishReasons.js";
 import { PROVIDERS } from "../config/providers.js";
 import { isNativePassthrough } from "../utils/clientDetector.js";
@@ -71,14 +71,23 @@ function adapterEntry(adapterConfig, kind) {
 }
 
 /**
- * Scan a Claude-format request body for server tools we can emulate.
+ * Scan a request body for server tools we can emulate.
+ *
+ * Claude wire: `tools[].type` starts with web_search / web_fetch.
+ * Responses wire: hosted `tools[].type` is `web_search` / `web_search_preview`
+ * (a plain function tool declares `type: "function"`, so a client tool named
+ * web_search is never mistaken for a hosted one).
+ *
+ * @param {object} body
+ * @param {string} [sourceFormat] - "claude" (default) or "openai-responses"
  * @returns {Array<{kind: string, type: string, name: string, maxUses: number}>}
  */
-export function detectServerToolRequests(body) {
+export function detectServerToolRequests(body, sourceFormat = FORMATS.CLAUDE) {
   const tools = Array.isArray(body?.tools) ? body.tools : [];
   const found = [];
   for (const tool of tools) {
     const type = String(tool?.type || "");
+    if (sourceFormat === FORMATS.OPENAI_RESPONSES && type === OPENAI_BLOCK.FUNCTION) continue;
     const spec = SERVER_TOOL_KINDS.find(s => type.startsWith(s.typePrefix));
     if (!spec) continue;
     found.push({
@@ -134,12 +143,16 @@ function downgradeToolId(id) {
 
 /**
  * Downgrade server-tool history blocks to a plain tool loop (copy-on-write):
- *   server_tool_use          → tool_use (paired id, srvtoolu_ → toolu_)
- *   web_search_tool_result   → tool_result (text-flattened)
- *   web_fetch_tool_result    → tool_result (text-flattened)
+ *   Claude wire:
+ *     server_tool_use          → tool_use (paired id, srvtoolu_ → toolu_)
+ *     web_search_tool_result   → tool_result (text-flattened)
+ *     web_fetch_tool_result    → tool_result (text-flattened)
+ *   Responses wire:
+ *     web_search_call          → assistant message item with a text summary
  * Returns the original body untouched when there is nothing to downgrade.
  */
-export function downgradeServerToolHistory(body) {
+export function downgradeServerToolHistory(body, sourceFormat = FORMATS.CLAUDE) {
+  if (sourceFormat === FORMATS.OPENAI_RESPONSES) return downgradeResponsesInput(body);
   if (!Array.isArray(body?.messages)) return body;
   let changed = false;
   const messages = body.messages.map(msg => {
@@ -168,26 +181,71 @@ export function downgradeServerToolHistory(body) {
   return changed ? { ...body, messages } : body;
 }
 
+// Responses history carries the search as a standalone `web_search_call` item.
+// Replace it with an assistant text item: every downstream wire understands a
+// message, and the model keeps a record of what was searched.
+function downgradeResponsesInput(body) {
+  const input = body?.input;
+  if (!Array.isArray(input)) return body;
+  let changed = false;
+  const out = [];
+  for (const item of input) {
+    if (item?.type === "web_search_call") {
+      changed = true;
+      const query = item.action?.query || item.query;
+      const url = item.action?.url;
+      const text = query ? `[web search: ${query}]` : url ? `[web fetch: ${url}]` : "[web search]";
+      out.push({
+        type: RESPONSES_ITEM.MESSAGE,
+        role: ROLE.ASSISTANT,
+        content: [{ type: RESPONSES_ITEM.OUTPUT_TEXT, text }],
+      });
+      continue;
+    }
+    out.push(item);
+  }
+  return changed ? { ...body, input: out } : body;
+}
+
 /**
  * Does this target actually receive the server tool?
  *
- * Two ways a request can reach an upstream with `web_search_20250305` intact:
- *   • native passthrough (Claude client → Anthropic / anthropic-compatible-*)
- *   • the provider's Claude transport declares `claudeSupportedToolTypes`
- *     (prepareClaudeRequest keeps whitelisted types; DeepSeek is the case today)
+ * The answer is per wire:
+ *   • Claude wire — native passthrough (Anthropic / anthropic-compatible-*), or
+ *     the provider's Claude transport whitelists every requested type in
+ *     `claudeSupportedToolTypes` (prepareClaudeRequest keeps them).
+ *   • Responses wire — a same-format request forwards the hosted tool verbatim,
+ *     so native is the default; only a provider that declares the type in
+ *     `responsesUnsupportedToolTypes` (open-design) is emulated up front.
+ *     Any cross-format hop strips/drops hosted tools, so it always emulates.
  *
  * The model's own `search` capability is NOT the signal: it says the model could
- * search, but every other provider on this wire has the tool stripped by
- * prepareClaudeRequest before dispatch — deciding "native" on `search` alone
- * silently loses web access on gateways like open-design or the Ark endpoints.
+ * search, not that this endpoint accepts the protocol's server tool type.
  */
-function targetRunsServerTools(provider, tools) {
-  if (isNativePassthrough("claude", provider)) return true;
-  const supported = PROVIDERS[provider]?.quirks?.claudeSupportedToolTypes;
-  if (!Array.isArray(supported) || supported.length === 0) return false;
+function whitelistCovers(types, tools) {
+  if (!Array.isArray(types) || types.length === 0) return false;
   // Partial support would leave part of the requested toolset stripped, so
   // require every requested type to be whitelisted before stepping aside.
-  return tools.every(t => supported.includes(t.type));
+  return tools.every(t => types.includes(t.type));
+}
+
+function targetRunsServerTools(sourceFormat, targetFormat, provider, tools) {
+  if (sourceFormat === FORMATS.CLAUDE) {
+    if (targetFormat !== FORMATS.CLAUDE) return false;
+    if (isNativePassthrough("claude", provider)) return true;
+    return whitelistCovers(PROVIDERS[provider]?.quirks?.claudeSupportedToolTypes, tools);
+  }
+  if (sourceFormat === FORMATS.OPENAI_RESPONSES) {
+    if (targetFormat !== FORMATS.OPENAI_RESPONSES) return false;
+    // On a same-format Responses request the hosted tool is forwarded verbatim,
+    // so native is the default. Only a provider that explicitly declares the
+    // type in `responsesUnsupportedToolTypes` is emulated up front; entitlement
+    // denials are caught at runtime by chatCore's error fallback.
+    const unsupported = PROVIDERS[provider]?.quirks?.responsesUnsupportedToolTypes;
+    if (!Array.isArray(unsupported) || unsupported.length === 0) return true;
+    return !tools.some(t => unsupported.includes(t.type));
+  }
+  return false;
 }
 
 /**
@@ -195,22 +253,26 @@ function targetRunsServerTools(provider, tools) {
  * downgraded request body. Returns null when emulation does not apply —
  * the caller then proceeds exactly as before.
  *
- * The OpenAI wire has no Anthropic server tool type at all, so it always
- * emulates; a Claude-format wire only steps aside when targetRunsServerTools().
+ * `forceEmulate` bypasses the native declaration. chatCore uses it after an
+ * upstream rejects a declared-native tool with an entitlement error (Ark
+ * without 豆包搜索), so account state never requires editing provider code.
  */
-export function planServerToolEmulation({ body, sourceFormat, targetFormat, provider, adapterConfig }) {
-  // V1 scope: Claude-format clients (Claude Code). OpenAI Responses hosted
-  // tools remain a later phase.
-  if (sourceFormat !== FORMATS.CLAUDE) return null;
-  // Emulatable targets: OpenAI-compatible backends and Claude-compatible endpoints.
-  if (targetFormat !== FORMATS.OPENAI && targetFormat !== FORMATS.CLAUDE) return null;
+export function planServerToolEmulation({ body, sourceFormat, targetFormat, provider, adapterConfig, forceEmulate = false }) {
+  const sourceOk = sourceFormat === FORMATS.CLAUDE || sourceFormat === FORMATS.OPENAI_RESPONSES;
+  if (!sourceOk) return null;
+  // All three translated wires can host the injected function tool. Native
+  // passthrough is decided per wire inside targetRunsServerTools().
+  const targetOk = targetFormat === FORMATS.OPENAI
+    || targetFormat === FORMATS.CLAUDE
+    || targetFormat === FORMATS.OPENAI_RESPONSES;
+  if (!targetOk) return null;
 
-  const requested = detectServerToolRequests(body);
+  const requested = detectServerToolRequests(body, sourceFormat);
   const emulatable = requested.filter(t => adapterEntry(adapterConfig, t.kind));
   if (emulatable.length === 0) return null;
-  if (targetFormat === FORMATS.CLAUDE && targetRunsServerTools(provider, requested)) return null;
+  if (!forceEmulate && targetRunsServerTools(sourceFormat, targetFormat, provider, requested)) return null;
 
-  let degradedBody = downgradeServerToolHistory(body);
+  let degradedBody = downgradeServerToolHistory(body, sourceFormat);
   // Drop the emulated server tools from the outgoing tool list: the translator
   // would otherwise convert each into a parameterless function tool that the
   // upstream could call with no usable input.
@@ -226,7 +288,7 @@ export function planServerToolEmulation({ body, sourceFormat, targetFormat, prov
     }
   }
 
-  return { tools: emulatable, degradedBody };
+  return { tools: emulatable, degradedBody, sourceFormat, targetFormat };
 }
 
 const EMULATED_TOOL_SPECS = {
@@ -267,6 +329,15 @@ export function injectEmulatedTools(translatedBody, plan, targetFormat) {
     req.emulatedName = name;
     if (targetFormat === FORMATS.CLAUDE) {
       translatedBody.tools.push({ name, description: spec.description, input_schema: spec.parameters });
+    } else if (targetFormat === FORMATS.OPENAI_RESPONSES) {
+      // Responses function tools are flat: {type:"function", name, parameters}.
+      translatedBody.tools.push({
+        type: OPENAI_BLOCK.FUNCTION,
+        name,
+        description: spec.description,
+        parameters: spec.parameters,
+        strict: false,
+      });
     } else {
       translatedBody.tools.push({
         type: OPENAI_BLOCK.FUNCTION,
@@ -389,7 +460,9 @@ async function parseUpstreamRound(providerResponse, model, responseFormat) {
   if (contentType.includes("text/event-stream")) {
     body = responseFormat === FORMATS.CLAUDE
       ? parseClaudeSseToMessage(text)
-      : parseSSEToOpenAIResponse(text, model);
+      : responseFormat === FORMATS.OPENAI_RESPONSES
+        ? parseResponsesSseToMessage(text)
+        : parseSSEToOpenAIResponse(text, model);
     if (!body) throw new Error("upstream returned an unparseable SSE body during tool emulation");
   } else {
     try {
@@ -398,12 +471,99 @@ async function parseUpstreamRound(providerResponse, model, responseFormat) {
       throw new Error("upstream returned a non-JSON body during tool emulation");
     }
   }
-  // Claude-compatible endpoints answer in message shape directly; anything
-  // that still looks like an OpenAI completion is converted. Everything else
+  // Responses bodies carry `output`; Claude-compatible endpoints answer in
+  // message shape directly; anything that still looks like an OpenAI
+  // completion (even from a Responses endpoint) is converted. Everything else
   // falls through to the loop's empty-content guard.
+  if (Array.isArray(body?.output)) return responsesToClaudeMessage(body);
   if (Array.isArray(body?.content)) return body;
   if (Array.isArray(body?.choices)) return openAICompletionToClaudeMessage(body);
   return body;
+}
+
+// Responses → the loop's internal Claude-message shape. function_call items keep
+// their original item on the block (`_responsesItem`) so the next round can echo
+// it back verbatim; the call_id is what function_call_output must match.
+function responsesToClaudeMessage(body) {
+  const output = Array.isArray(body?.output) ? body.output : [];
+  const content = [];
+  let hasTool = false;
+  for (const item of output) {
+    if (item?.type === RESPONSES_ITEM.MESSAGE) {
+      for (const part of item.content || []) {
+        if ((part?.type === RESPONSES_ITEM.OUTPUT_TEXT || part?.type === "text") && part.text) {
+          content.push({ type: CLAUDE_BLOCK.TEXT, text: part.text });
+        }
+      }
+    } else if (item?.type === RESPONSES_ITEM.REASONING) {
+      const text = (item.summary || []).map(s => s?.text).filter(Boolean).join("\n");
+      if (text) content.push({ type: CLAUDE_BLOCK.THINKING, thinking: text });
+    } else if (item?.type === RESPONSES_ITEM.FUNCTION_CALL) {
+      hasTool = true;
+      let input = {};
+      try { input = JSON.parse(item.arguments || "{}"); } catch { /* leave {} */ }
+      content.push({
+        type: CLAUDE_BLOCK.TOOL_USE,
+        id: item.call_id || item.id,
+        name: item.name,
+        input,
+        _responsesItem: item,
+      });
+    } else if (item?.type === RESPONSES_ITEM.CUSTOM_TOOL_CALL) {
+      hasTool = true;
+      content.push({
+        type: CLAUDE_BLOCK.TOOL_USE,
+        id: item.call_id || item.id,
+        name: item.name,
+        input: { input: item.input ?? "" },
+        _responsesItem: item,
+      });
+    }
+  }
+  const usage = body?.usage || {};
+  return {
+    id: body?.id || `msg_${Date.now().toString(36)}`,
+    type: "message",
+    role: "assistant",
+    model: body?.model,
+    content,
+    stop_reason: hasTool ? CLAUDE_STOP.TOOL_USE : CLAUDE_STOP.END_TURN,
+    usage: {
+      input_tokens: usage.input_tokens || usage.prompt_tokens || 0,
+      output_tokens: usage.output_tokens || usage.completion_tokens || 0,
+    },
+  };
+}
+
+// Aggregate a Responses SSE stream. Providers normally emit response.completed
+// with the finished object; the output_item.done fallback covers servers that
+// close early. Errors abort just like the Claude parser.
+function parseResponsesSseToMessage(rawSSE) {
+  let completed = null;
+  const items = new Map();
+  for (const chunk of String(rawSSE).split("\n\n")) {
+    const dataLine = chunk.split("\n").find(l => l.startsWith("data: "));
+    if (!dataLine) continue;
+    const raw = dataLine.slice("data: ".length).trim();
+    if (!raw || raw === "[DONE]") continue;
+    let evt;
+    try { evt = JSON.parse(raw); } catch { continue; }
+    if (evt.type === "error" || evt.type === "response.failed") {
+      throw new Error(evt.error?.message || evt.response?.error?.message || "upstream Responses error during tool emulation");
+    }
+    if ((evt.type === "response.completed" || evt.type === "response.done") && evt.response) {
+      completed = evt.response;
+    }
+    if (evt.type === "response.output_item.done" && evt.item) {
+      items.set(Number.isInteger(evt.output_index) ? evt.output_index : items.size, evt.item);
+    }
+  }
+  if (completed) return responsesToClaudeMessage(completed);
+  if (items.size > 0) {
+    const output = [...items.entries()].sort((a, b) => a[0] - b[0]).map(([, item]) => item);
+    return responsesToClaudeMessage({ output });
+  }
+  throw new Error("upstream returned an unparseable Responses SSE body during tool emulation");
 }
 
 // Aggregate an Anthropic-format SSE stream (message_start / content_block_delta /
@@ -459,11 +619,48 @@ function parseClaudeSseToMessage(rawSSE) {
   return message;
 }
 
-// Append one emulated round to the upstream message history, in the target's
-// shape: assistant(text? + tool_use blocks) followed by one user turn carrying
-// the tool_result blocks (Claude), or assistant(tool_calls) + role:"tool"
-// messages (OpenAI).
-function appendToolRound(messages, assistantText, calls, targetFormat) {
+// Append one emulated round to the upstream history, in the target's shape:
+//   Claude   → assistant(text? + tool_use blocks) + user(tool_result blocks)
+//   OpenAI   → assistant(tool_calls) + role:"tool" messages
+//   Responses→ input items: assistant message?, function_call, function_call_output
+function appendToolRound(body, assistantText, calls, targetFormat) {
+  if (targetFormat === FORMATS.OPENAI_RESPONSES) {
+    if (typeof body.input === "string") {
+      body.input = [{
+        type: RESPONSES_ITEM.MESSAGE,
+        role: ROLE.USER,
+        content: [{ type: RESPONSES_ITEM.INPUT_TEXT, text: body.input }],
+      }];
+    }
+    if (!Array.isArray(body.input)) body.input = [];
+    if (assistantText) {
+      body.input.push({
+        type: RESPONSES_ITEM.MESSAGE,
+        role: ROLE.ASSISTANT,
+        content: [{ type: RESPONSES_ITEM.OUTPUT_TEXT, text: assistantText }],
+      });
+    }
+    for (const c of calls) {
+      // Echo the upstream's own function_call item when we have it: the API
+      // matches the output by call_id, but keeping the original id/status is
+      // the safest shape across gateways.
+      body.input.push(c.raw || {
+        type: RESPONSES_ITEM.FUNCTION_CALL,
+        id: `fc_${c.id}`,
+        call_id: c.id,
+        name: c.name,
+        arguments: JSON.stringify(c.input || {}),
+        status: "completed",
+      });
+    }
+    for (const c of calls) {
+      body.input.push({ type: RESPONSES_ITEM.FUNCTION_CALL_OUTPUT, call_id: c.id, output: c.resultText });
+    }
+    return;
+  }
+
+  if (!Array.isArray(body.messages)) body.messages = [];
+  const messages = body.messages;
   if (targetFormat === FORMATS.CLAUDE) {
     const content = [];
     if (assistantText) content.push({ type: CLAUDE_BLOCK.TEXT, text: assistantText });
@@ -506,7 +703,7 @@ function appendToolRound(messages, assistantText, calls, targetFormat) {
  * @param {Function} args.runUpstream       async (translatedBody) => providerResponse
  * @param {string} args.model               Upstream model id (SSE parsing hint).
  * @param {string} args.clientModel         Model name echoed back to the client.
- * @param {string} args.targetFormat        Wire format of the translated body ("openai" | "claude").
+ * @param {string} args.targetFormat        Wire format of the translated body ("openai" | "claude" | "openai-responses").
  * @param {string} args.responseFormat      Wire format the upstream answers in.
  * @returns {{ok: true, claudeResponse: object, rounds: number} | {ok: false, status: number, error: string}}
  */
@@ -575,6 +772,7 @@ export async function runServerToolEmulation({ firstResponse, plan, translatedBo
         toolCallsForUpstream.push({
           id: call.id, name: call.name, input: call.input || {},
           resultText: `Web tool "${call.name}" usage limit (${maxToolUses}) reached. Answer with what you have.`,
+          raw: call._responsesItem,
         });
         continue;
       }
@@ -583,7 +781,7 @@ export async function runServerToolEmulation({ firstResponse, plan, translatedBo
       const kind = plan.tools.find(t => t.emulatedName === call.name)?.kind;
       const executed = await executeEmulatedTool({ kind, input: call.input, srvId, executeServerTool, log });
       emitted.push(executed.block);
-      toolCallsForUpstream.push({ id: call.id, name: call.name, input: call.input || {}, resultText: executed.text });
+      toolCallsForUpstream.push({ id: call.id, name: call.name, input: call.input || {}, resultText: executed.text, raw: call._responsesItem });
       remainingUses--;
     }
 
@@ -601,7 +799,7 @@ export async function runServerToolEmulation({ firstResponse, plan, translatedBo
       break;
     }
 
-    appendToolRound(translatedBody.messages, roundText.join(""), toolCallsForUpstream, targetFormat);
+    appendToolRound(translatedBody, roundText.join(""), toolCallsForUpstream, targetFormat);
     if (remainingUses <= 0) {
       const emuNames = new Set(plan.tools.map(t => t.emulatedName));
       translatedBody.tools = (translatedBody.tools || []).filter(t => !emuNames.has(t?.function?.name) && !emuNames.has(t?.name));
@@ -693,5 +891,193 @@ export function claudeMessageToSseBody(msg) {
     usage: { output_tokens: msg.usage?.output_tokens || 0 },
   });
   push("message_stop", { type: "message_stop" });
+  return events.join("");
+}
+
+/**
+ * Does an upstream error mean "the provider supports this server tool, but this
+ * account is not entitled to it"? Deliberately narrow: an unrelated 401/403
+ * (bad key, model not entitled) must keep the original error rather than
+ * silently switching to emulation.
+ */
+export function isWebToolAccessError(status, message) {
+  const code = Number(status);
+  if (![400, 401, 403, 404, 422].includes(code)) return false;
+  const s = String(message || "").toLowerCase();
+  if (!s) return false;
+  const mentionsTool = /web[\s_-]?search|web[\s_-]?fetch|search tool|联网搜索/.test(s);
+  const mentionsDenied = /access denied|not (?:enabled|activated|authorized|available|supported)|permission|forbidden|unsupported|activation status|未开通|无权限|不支持/.test(s);
+  return mentionsTool && mentionsDenied;
+}
+
+function responsesId(prefix) {
+  return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * Convert the loop's internal Claude message into an OpenAI Responses object.
+ * Emulated search/fetch calls become `web_search_call` items; passthrough client
+ * tool calls become `function_call` items so the client still executes them.
+ */
+export function claudeMessageToResponsesResponse(claudeMsg, { model } = {}) {
+  const output = [];
+  let textItem = null;
+  const flushText = () => {
+    if (!textItem) return;
+    output.push(textItem);
+    textItem = null;
+  };
+  for (const block of claudeMsg?.content || []) {
+    if (block?.type === CLAUDE_BLOCK.TEXT) {
+      if (!textItem) {
+        textItem = {
+          type: RESPONSES_ITEM.MESSAGE,
+          id: responsesId("msg"),
+          status: "completed",
+          role: ROLE.ASSISTANT,
+          content: [],
+        };
+      }
+      textItem.content.push({
+        type: RESPONSES_ITEM.OUTPUT_TEXT,
+        annotations: [],
+        logprobs: [],
+        text: block.text || "",
+      });
+      continue;
+    }
+    flushText();
+    if (block?.type === CLAUDE_BLOCK.THINKING) {
+      output.push({
+        type: RESPONSES_ITEM.REASONING,
+        id: responsesId("rs"),
+        summary: [{ type: RESPONSES_ITEM.SUMMARY_TEXT, text: block.thinking || "" }],
+      });
+    } else if (block?.type === CLAUDE_BLOCK.SERVER_TOOL_USE) {
+      const isFetch = String(block.name || "").includes("fetch");
+      output.push({
+        type: "web_search_call",
+        id: responsesId("ws"),
+        status: "completed",
+        action: isFetch
+          ? { type: "open_page", url: String(block.input?.url || "") }
+          : { type: "search", query: String(block.input?.query || "") },
+      });
+    } else if (block?.type === CLAUDE_BLOCK.TOOL_USE) {
+      output.push({
+        type: RESPONSES_ITEM.FUNCTION_CALL,
+        id: responsesId("fc"),
+        call_id: block.id,
+        name: block.name,
+        arguments: JSON.stringify(block.input || {}),
+        status: "completed",
+      });
+    }
+  }
+  flushText();
+
+  const inputTokens = claudeMsg?.usage?.input_tokens || 0;
+  const outputTokens = claudeMsg?.usage?.output_tokens || 0;
+  return {
+    id: responsesId("resp"),
+    object: "response",
+    created_at: Math.floor(Date.now() / 1000),
+    status: "completed",
+    background: false,
+    error: null,
+    model: model || claudeMsg?.model || null,
+    output,
+    usage: { input_tokens: inputTokens, output_tokens: outputTokens, total_tokens: inputTokens + outputTokens },
+  };
+}
+
+/**
+ * Serialize a Responses object into the event stream the Responses API uses.
+ * Mirrors open-sse/translator/response/openai-responses.js closely enough for
+ * Codex: created → per-item added/delta/done → completed.
+ */
+export function responsesToSseBody(response) {
+  const events = [];
+  let seq = 0;
+  const emit = (type, data) => {
+    data.sequence_number = ++seq;
+    events.push(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+  emit("response.created", {
+    type: "response.created",
+    response: {
+      id: response.id,
+      object: "response",
+      created_at: response.created_at,
+      status: "in_progress",
+      background: false,
+      error: null,
+      output: [],
+    },
+  });
+  emit("response.in_progress", {
+    type: "response.in_progress",
+    response: { id: response.id, object: "response", created_at: response.created_at, status: "in_progress" },
+  });
+
+  (response.output || []).forEach((item, outputIndex) => {
+    const added = item.type === RESPONSES_ITEM.MESSAGE
+      ? { ...item, content: [] }
+      : item.type === RESPONSES_ITEM.FUNCTION_CALL
+        ? { ...item, arguments: "" }
+        : item;
+    emit("response.output_item.added", { type: "response.output_item.added", output_index: outputIndex, item: added });
+
+    if (item.type === RESPONSES_ITEM.MESSAGE) {
+      const text = (item.content || []).map(p => p.text || "").join("");
+      emit("response.content_part.added", {
+        type: "response.content_part.added",
+        item_id: item.id,
+        output_index: outputIndex,
+        content_index: 0,
+        part: { type: RESPONSES_ITEM.OUTPUT_TEXT, annotations: [], logprobs: [], text: "" },
+      });
+      emit("response.output_text.delta", {
+        type: "response.output_text.delta",
+        item_id: item.id,
+        output_index: outputIndex,
+        content_index: 0,
+        delta: text,
+        logprobs: [],
+      });
+      emit("response.output_text.done", {
+        type: "response.output_text.done",
+        item_id: item.id,
+        output_index: outputIndex,
+        content_index: 0,
+        text,
+        logprobs: [],
+      });
+      emit("response.content_part.done", {
+        type: "response.content_part.done",
+        item_id: item.id,
+        output_index: outputIndex,
+        content_index: 0,
+        part: { type: RESPONSES_ITEM.OUTPUT_TEXT, annotations: [], logprobs: [], text },
+      });
+    } else if (item.type === RESPONSES_ITEM.FUNCTION_CALL) {
+      emit("response.function_call_arguments.delta", {
+        type: "response.function_call_arguments.delta",
+        item_id: item.id,
+        output_index: outputIndex,
+        delta: item.arguments || "",
+      });
+      emit("response.function_call_arguments.done", {
+        type: "response.function_call_arguments.done",
+        item_id: item.id,
+        output_index: outputIndex,
+        arguments: item.arguments || "",
+      });
+    }
+
+    emit("response.output_item.done", { type: "response.output_item.done", output_index: outputIndex, item });
+  });
+
+  emit("response.completed", { type: "response.completed", response });
   return events.join("");
 }

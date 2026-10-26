@@ -6,6 +6,9 @@ import {
   injectEmulatedTools,
   runServerToolEmulation,
   claudeMessageToSseBody,
+  claudeMessageToResponsesResponse,
+  responsesToSseBody,
+  isWebToolAccessError,
 } from "../../open-sse/services/serverToolEmulator.js";
 
 const { searchCoreMock, fetchCoreMock } = vi.hoisted(() => ({
@@ -220,13 +223,30 @@ describe("planServerToolEmulation — native only when the tool survives the pip
     expect(plan).toBeNull(); // no emulatable tool → no plan, strip behavior unchanged
   });
 
-  it("does not activate for non-Claude sources or non-chat targets", () => {
+  it("does not activate for unsupported source or target wires", () => {
     expect(planServerToolEmulation(planArgs({ sourceFormat: "openai" }))).toBeNull();
-    // Codex / Responses clients carry the hosted {type:"web_search"} tool; the
-    // provider's openai-responses transport forwards it untranslated, so the
-    // emulator must stay out of that path entirely.
-    expect(planServerToolEmulation(planArgs({ sourceFormat: "openai-responses" }))).toBeNull();
     expect(planServerToolEmulation(planArgs({ targetFormat: "gemini" }))).toBeNull();
+  });
+
+  it("emulates Responses hosted web_search unless the target declares it native", () => {
+    // Codex sends the hosted {type:"web_search"} tool, not an Anthropic server
+    // tool; the emulator now covers that wire too.
+    const responsesBody = {
+      tools: [{ type: "web_search" }],
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "q" }] }],
+    };
+    const responsesArgs = (overrides = {}) => planArgs({
+      body: responsesBody, sourceFormat: "openai-responses", targetFormat: "openai-responses", ...overrides,
+    });
+    // open-design declares the type unsupported → emulate up front.
+    expect(planServerToolEmulation(responsesArgs({ provider: "open-design" }))).not.toBeNull();
+    // A Responses client routed to a Chat/Claude target always emulates.
+    expect(planServerToolEmulation(responsesArgs({ provider: "open-design", targetFormat: "openai" }))).not.toBeNull();
+    // Native is the default on a same-format Responses request (no deny-list).
+    expect(planServerToolEmulation(responsesArgs({ provider: "volcengine-ark" }))).toBeNull();
+    expect(planServerToolEmulation(responsesArgs({ provider: "kimi" }))).toBeNull();
+    // Entitlement fallback forces emulation past that default.
+    expect(planServerToolEmulation(responsesArgs({ provider: "volcengine-ark", forceEmulate: true }))).not.toBeNull();
   });
 });
 
@@ -242,6 +262,68 @@ describe("detectServerToolRequests", () => {
   it("ignores non-web server tools and requests without tools", () => {
     expect(detectServerToolRequests({ tools: [{ type: "code_execution_20250522" }] })).toEqual([]);
     expect(detectServerToolRequests({})).toEqual([]);
+  });
+});
+
+describe("Responses source support", () => {
+  it("detects hosted web_search only, never a function tool named web_search", () => {
+    expect(detectServerToolRequests({ tools: [{ type: "web_search" }] }, "openai-responses")).toEqual([
+      { kind: "web_search", type: "web_search", name: "web_search", maxUses: 5 },
+    ]);
+    expect(detectServerToolRequests({ tools: [{ type: "function", name: "web_search" }] }, "openai-responses")).toEqual([]);
+  });
+
+  it("downgrades web_search_call history to an assistant text item", () => {
+    const body = {
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "q" }] },
+        { type: "web_search_call", id: "ws_1", status: "completed", action: { type: "search", query: "rust" } },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "a" }] },
+      ],
+    };
+    const out = downgradeServerToolHistory(body, "openai-responses");
+    expect(out.input[1]).toEqual({
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "[web search: rust]" }],
+    });
+  });
+
+  it("builds a Responses object and SSE from the emulated Claude message", () => {
+    const msg = {
+      id: "msg_1", type: "message", role: "assistant", model: "m",
+      content: [
+        { type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "rust" } },
+        { type: "web_search_tool_result", tool_use_id: "srvtoolu_1", content: [] },
+        { type: "text", text: "answer" },
+        { type: "tool_use", id: "toolu_2", name: "shell", input: { cmd: "ls" } },
+      ],
+      stop_reason: "tool_use",
+      usage: { input_tokens: 7, output_tokens: 3 },
+    };
+    const response = claudeMessageToResponsesResponse(msg, { model: "codex-model" });
+    expect(response.object).toBe("response");
+    expect(response.output.map(i => i.type)).toEqual(["web_search_call", "message", "function_call"]);
+    expect(response.output[0].action).toEqual({ type: "search", query: "rust" });
+    expect(response.output[2]).toMatchObject({ type: "function_call", call_id: "toolu_2", name: "shell" });
+    expect(response.usage).toEqual({ input_tokens: 7, output_tokens: 3, total_tokens: 10 });
+
+    const sse = responsesToSseBody(response);
+    expect(sse).toContain("event: response.created");
+    expect(sse).toContain("event: response.output_text.delta");
+    expect(sse).toContain("event: response.completed");
+    const completed = sse.split("\n\n")
+      .filter(e => e.startsWith("event: response.completed"))
+      .map(e => JSON.parse(e.split("\n")[1].slice("data: ".length)))[0];
+    expect(completed.response.status).toBe("completed");
+    expect(completed.response.output).toHaveLength(3);
+  });
+
+  it("recognizes web-tool entitlement errors without swallowing model entitlement errors", () => {
+    expect(isWebToolAccessError(403, "Access denied for web search ... verify the activation status")).toBe(true);
+    expect(isWebToolAccessError(400, "unsupported server tool web_fetch")).toBe(true);
+    expect(isWebToolAccessError(403, "403 tier_model_not_entitled")).toBe(false);
+    expect(isWebToolAccessError(401, "invalid api key")).toBe(false);
   });
 });
 

@@ -7,7 +7,8 @@
  * detail, logging) is passed in as callbacks so this module stays free of `@/`
  * imports and usable from the standalone engine.
  */
-import { claudeMessageToSseBody, runServerToolEmulation } from "./serverToolEmulator.js";
+import { claudeMessageToResponsesResponse, claudeMessageToSseBody, responsesToSseBody, runServerToolEmulation } from "./serverToolEmulator.js";
+import { FORMATS } from "../translator/formats.js";
 
 /**
  * Drive the emulation loop against the provider.
@@ -61,7 +62,7 @@ export function runEmulatedExchange({
 export function buildEmulatedResponse({ emuResult, wantsSse, ctx }) {
   const {
     provider, model, connectionId, sessionId, apiKey, clientRawRequest, requestStartTime,
-    pxpipe, body, translatedBody, reqTag, log,
+    pxpipe, body, translatedBody, sourceFormat, reqTag, log,
     appendLog, trackDone, onRequestSuccess,
     formatDoneLine, saveUsageStats, saveRequestDetail, buildRequestDetail, extractRequestConfig,
   } = ctx;
@@ -107,9 +108,19 @@ export function buildEmulatedResponse({ emuResult, wantsSse, ctx }) {
     console.error("[RequestDetail] Failed to save:", err.message);
   });
 
+  let payload;
+  if (sourceFormat === FORMATS.OPENAI_RESPONSES) {
+    const response = claudeMessageToResponsesResponse(claudeResponse, {
+      model: clientRawRequest?.body?.model || model,
+    });
+    payload = wantsSse ? responsesToSseBody(response) : JSON.stringify(response);
+  } else {
+    payload = wantsSse ? claudeMessageToSseBody(claudeResponse) : JSON.stringify(claudeResponse);
+  }
+
   return {
     success: true,
-    response: new Response(wantsSse ? claudeMessageToSseBody(claudeResponse) : JSON.stringify(claudeResponse), {
+    response: new Response(payload, {
       headers: wantsSse
         ? { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive", "Access-Control-Allow-Origin": "*" }
         : { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },

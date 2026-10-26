@@ -314,4 +314,258 @@ describe("handleChatCore server tool emulation (Web Tools Adapter)", () => {
     expect(legacyFn).toBeTruthy();
     expect(legacyFn.function.parameters?.properties?.query).toBeUndefined();
   });
+
+  it("surfaces the upstream error when an already-emulated request fails", async () => {
+    executeMock.mockImplementation(async () => ({
+      response: new Response(JSON.stringify({ error: { message: "upstream boom" } }), {
+        status: 500, headers: { "content-type": "application/json" },
+      }),
+      url: "https://api.openai.com/v1/chat/completions",
+      headers: {},
+      transformedBody: null,
+    }));
+
+    const result = await runChatCore({ clientStream: false });
+    expect(result.success).toBe(false);
+    expect(result.status).toBe(500);
+    expect(result.error).toContain("upstream boom");
+    // The fallback only applies to the native path; an emulated first attempt
+    // must not be retried again.
+    expect(executeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("emulates hosted web_search for a Codex/Responses client (open-design)", async () => {
+    const executedBodies = [];
+    const responsesJson = (output, usage = { input_tokens: 10, output_tokens: 4 }) => new Response(JSON.stringify({
+      id: "resp_test", object: "response", status: "completed", model: "gpt-6-astra", output, usage,
+    }), { status: 200, headers: { "content-type": "application/json" } });
+
+    executeMock.mockImplementation(async ({ body: upstreamBody }) => {
+      executedBodies.push(JSON.parse(JSON.stringify(upstreamBody)));
+      if (executedBodies.length === 1) {
+        return {
+          response: responsesJson([{
+            type: "function_call", id: "fc_1", call_id: "call_1", name: "web_search",
+            arguments: '{"query":"rust vs go"}', status: "completed",
+          }], { input_tokens: 10, output_tokens: 4 }),
+          url: "https://amr-link.open-design.ai/v1/responses",
+          headers: {},
+          transformedBody: null,
+        };
+      }
+      return {
+        response: responsesJson([{
+          type: "message", role: "assistant",
+          content: [{ type: "output_text", text: "Go compiles faster." }],
+        }], { input_tokens: 20, output_tokens: 6 }),
+        url: "https://amr-link.open-design.ai/v1/responses",
+        headers: {},
+        transformedBody: null,
+      };
+    });
+
+    const result = await handleChatCore({
+      body: {
+        model: "od/gpt-6-astra",
+        stream: true,
+        tools: [{ type: "web_search" }],
+        input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "rust vs go" }] }],
+      },
+      modelInfo: { provider: "open-design", model: "gpt-6-astra" },
+      credentials: { apiKey: "test-key", providerSpecificData: {} },
+      log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), line: vi.fn(), tagForSession: () => "T" },
+      connectionId: "test-conn",
+      rtkEnabled: false,
+      headroomEnabled: false,
+      cavemanEnabled: false,
+      ponytailEnabled: false,
+      customPromptEnabled: false,
+      pxpipeEnabled: false,
+      sourceFormatOverride: "openai-responses",
+      webToolsAdapter: adapterConfig,
+      executeServerTool: async () => ({ ok: true, data: { results: [{ title: "Rust vs Go", url: "https://x.io/a", snippet: "bench" }] } }),
+      clientRawRequest: {
+        endpoint: "/v1/responses",
+        body: { model: "od/gpt-6-astra" },
+        headers: { accept: "text/event-stream" },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    // Hosted tool replaced by a flat Responses function tool; upstream non-streaming.
+    expect(executedBodies[0].stream).toBe(false);
+    expect(executedBodies[0].tools).toEqual([
+      expect.objectContaining({
+        type: "function",
+        name: "web_search",
+        parameters: expect.objectContaining({ required: ["query"] }),
+      }),
+    ]);
+
+    // Second round echoes the function_call item and appends function_call_output.
+    const secondInput = executedBodies[1].input;
+    expect(secondInput.at(-2)).toMatchObject({ type: "function_call", call_id: "call_1", name: "web_search" });
+    expect(secondInput.at(-1)).toMatchObject({ type: "function_call_output", call_id: "call_1" });
+    expect(secondInput.at(-1).output).toContain("https://x.io/a");
+
+    // Client sees a Responses event stream with the restored web_search_call.
+    const sse = await result.response.text();
+    expect(result.response.headers.get("content-type")).toContain("text/event-stream");
+    expect(sse).toContain("event: response.created");
+    expect(sse).toContain('"type":"web_search_call"');
+    expect(sse).toContain("Go compiles faster.");
+    expect(sse).toContain("event: response.completed");
+  });
+
+  it("falls back to emulation when a declared-native provider denies web search to the account", async () => {
+    const executedBodies = [];
+    executeMock.mockImplementation(async ({ body: upstreamBody }) => {
+      executedBodies.push(JSON.parse(JSON.stringify(upstreamBody)));
+      if (executedBodies.length === 1) {
+        return {
+          response: new Response(JSON.stringify({
+            error: { message: "Access denied for web search, please verify the activation status of Doubao Search" },
+          }), { status: 403, headers: { "content-type": "application/json" } }),
+          url: "https://ark.cn-beijing.volces.com/api/coding/v1/messages",
+          headers: {},
+          transformedBody: null,
+        };
+      }
+      if (executedBodies.length === 2) {
+        return {
+          response: claudeJson([{ type: "tool_use", id: "toolu_1", name: "web_search", input: { query: "rust vs go" } }], "tool_use"),
+          url: "https://ark.cn-beijing.volces.com/api/coding/v1/messages",
+          headers: {},
+          transformedBody: null,
+        };
+      }
+      return {
+        response: claudeJson([{ type: "text", text: "Answer after emulated search." }]),
+        url: "https://ark.cn-beijing.volces.com/api/coding/v1/messages",
+        headers: {},
+        transformedBody: null,
+      };
+    });
+
+    const result = await handleChatCore({
+      body: {
+        ...claudeBody,
+        stream: false,
+        tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }],
+      },
+      modelInfo: { provider: "volcengine-ark", model: "doubao-seed-2.1-pro" },
+      credentials: { apiKey: "test-key", providerSpecificData: {} },
+      log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), line: vi.fn(), tagForSession: () => "T" },
+      connectionId: "test-conn",
+      rtkEnabled: false,
+      headroomEnabled: false,
+      cavemanEnabled: false,
+      ponytailEnabled: false,
+      customPromptEnabled: false,
+      pxpipeEnabled: false,
+      sourceFormatOverride: "claude",
+      webToolsAdapter: adapterConfig,
+      executeServerTool: async () => ({ ok: true, data: { results: [{ title: "Rust vs Go", url: "https://x.io/a", snippet: "bench" }] } }),
+      clientRawRequest: {
+        endpoint: "/v1/messages",
+        body: { model: "ark/doubao-seed-2.1-pro" },
+        headers: { accept: "application/json" },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    // native 403 → emulated round → final answer
+    expect(executeMock).toHaveBeenCalledTimes(3);
+    expect(executedBodies[1].stream).toBe(false);
+    const injected = executedBodies[1].tools.find(t => t.name === "web_search");
+    expect(injected.input_schema.required).toEqual(["query"]);
+    expect(executedBodies[2].messages.at(-2).content.at(-1)).toMatchObject({ type: "tool_use", name: "web_search" });
+    expect(executedBodies[2].messages.at(-1).content[0]).toMatchObject({ type: "tool_result" });
+
+    const message = await result.response.json();
+    expect(message.content.map(b => b.type)).toEqual(["server_tool_use", "web_search_tool_result", "text"]);
+    expect(message.content.at(-1).text).toBe("Answer after emulated search.");
+  });
+
+  it("falls back to emulation when a native Responses provider denies web search", async () => {
+    const executedBodies = [];
+    const responsesJson = (output, usage = { input_tokens: 10, output_tokens: 4 }) => new Response(JSON.stringify({
+      id: "resp_test", object: "response", status: "completed", output, usage,
+    }), { status: 200, headers: { "content-type": "application/json" } });
+
+    executeMock.mockImplementation(async ({ body: upstreamBody }) => {
+      executedBodies.push(JSON.parse(JSON.stringify(upstreamBody)));
+      if (executedBodies.length === 1) {
+        return {
+          response: new Response(JSON.stringify({
+            error: { message: "Access denied for web search, verify the activation status" },
+          }), { status: 403, headers: { "content-type": "application/json" } }),
+          url: "https://ark.cn-beijing.volces.com/api/coding/v3/responses",
+          headers: {},
+          transformedBody: null,
+        };
+      }
+      if (executedBodies.length === 2) {
+        return {
+          response: responsesJson([{
+            type: "function_call", id: "fc_1", call_id: "call_1", name: "web_search",
+            arguments: '{"query":"rust vs go"}', status: "completed",
+          }]),
+          url: "https://ark.cn-beijing.volces.com/api/coding/v3/responses",
+          headers: {},
+          transformedBody: null,
+        };
+      }
+      return {
+        response: responsesJson([{
+          type: "message", role: "assistant",
+          content: [{ type: "output_text", text: "Go compiles faster." }],
+        }]),
+        url: "https://ark.cn-beijing.volces.com/api/coding/v3/responses",
+        headers: {},
+        transformedBody: null,
+      };
+    });
+
+    const result = await handleChatCore({
+      body: {
+        model: "ark/doubao-seed-2.1-pro",
+        stream: false,
+        tools: [{ type: "web_search" }],
+        input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "rust vs go" }] }],
+      },
+      modelInfo: { provider: "volcengine-ark", model: "doubao-seed-2.1-pro" },
+      credentials: { apiKey: "test-key", providerSpecificData: {} },
+      log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), line: vi.fn(), tagForSession: () => "T" },
+      connectionId: "test-conn",
+      rtkEnabled: false,
+      headroomEnabled: false,
+      cavemanEnabled: false,
+      ponytailEnabled: false,
+      customPromptEnabled: false,
+      pxpipeEnabled: false,
+      sourceFormatOverride: "openai-responses",
+      webToolsAdapter: adapterConfig,
+      executeServerTool: async () => ({ ok: true, data: { results: [{ title: "Rust vs Go", url: "https://x.io/a", snippet: "bench" }] } }),
+      clientRawRequest: {
+        endpoint: "/v1/responses",
+        body: { model: "ark/doubao-seed-2.1-pro" },
+        headers: { accept: "application/json" },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(executeMock).toHaveBeenCalledTimes(3);
+    // First attempt is native: the hosted tool rides through untouched.
+    expect(executedBodies[0].tools).toEqual([expect.objectContaining({ type: "web_search" })]);
+    // Retry replaces it with a flat Responses function tool.
+    expect(executedBodies[1].tools).toEqual([expect.objectContaining({ type: "function", name: "web_search" })]);
+    // Second emulated round carries the function_call_output.
+    expect(executedBodies[2].input.at(-1)).toMatchObject({ type: "function_call_output", call_id: "call_1" });
+
+    const response = await result.response.json();
+    expect(response.object).toBe("response");
+    expect(response.output.map(i => i.type)).toEqual(["web_search_call", "message"]);
+    expect(response.output[1].content[0].text).toBe("Go compiles faster.");
+  });
 });
