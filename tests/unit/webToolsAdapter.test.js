@@ -222,6 +222,10 @@ describe("planServerToolEmulation — native only when the tool survives the pip
 
   it("does not activate for non-Claude sources or non-chat targets", () => {
     expect(planServerToolEmulation(planArgs({ sourceFormat: "openai" }))).toBeNull();
+    // Codex / Responses clients carry the hosted {type:"web_search"} tool; the
+    // provider's openai-responses transport forwards it untranslated, so the
+    // emulator must stay out of that path entirely.
+    expect(planServerToolEmulation(planArgs({ sourceFormat: "openai-responses" }))).toBeNull();
     expect(planServerToolEmulation(planArgs({ targetFormat: "gemini" }))).toBeNull();
   });
 });

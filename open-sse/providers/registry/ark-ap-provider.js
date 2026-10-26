@@ -33,6 +33,9 @@ export default {
       // intentional, and the adapter emulates the whole set when both are asked
       // for. Must live on the top-level transport: providers/index.js builds
       // PROVIDERS[id] from `transport` and only attaches `transports` alongside.
+      // Claude wire only: a Codex client matches the openai-responses transport
+      // below, so translation is skipped and its hosted web_search tool passes
+      // through untranslated without consulting this list.
       claudeSupportedToolTypes: ["web_search_20250305", "web_search_20260209"],
     },
   },

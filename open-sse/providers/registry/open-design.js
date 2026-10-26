@@ -10,7 +10,10 @@
 // hosted {type:"web_search"}), every Claude id answers HTTP 400
 // "unsupported Responses tool type … on Chat route" — the gateway normalizes
 // onto its internal Chat route. Do not add claudeSupportedToolTypes here; the
-// Web Tools Adapter must emulate for this provider.
+// Web Tools Adapter emulates for **Claude clients**. Responses clients are a
+// different story: their transport matches by format, so translation is skipped
+// and the hosted tool reaches this gateway untouched — the adapter does not
+// cover Responses sources, so they surface the upstream 400 as-is.
 // Quota data (credits windows + wallet balance) lives behind the console
 // session cookie — see getOpenDesignUsage() in services/usage/misc.js.
 export default {

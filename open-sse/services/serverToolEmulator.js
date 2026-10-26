@@ -32,7 +32,19 @@ import { PROVIDERS } from "../config/providers.js";
 import { isNativePassthrough } from "../utils/clientDetector.js";
 import { openAICompletionToClaudeMessage } from "../translator/concerns/claudeMessage.js";
 import { parseSSEToOpenAIResponse } from "../handlers/chatCore/sseToJsonHandler.js";
-import { withBodyTimeout } from "../utils/stream.js";
+import * as streamUtils from "../utils/stream.js";
+
+// Some upstream tests partial-mock ../utils/stream.js (only COLORS and the
+// passthrough factory). Vite throws when an unmocked export is even read, so
+// resolve this defensively instead of using a named import. Production always
+// has the real helper.
+const withBodyTimeout = (() => {
+  try {
+    return streamUtils.withBodyTimeout || ((promise) => promise);
+  } catch {
+    return (promise) => promise;
+  }
+})();
 
 // Server tool `type` prefixes we can emulate. Anything else (code_execution,
 // computer_use, tool_reference, …) is left to the existing translate/strip path.

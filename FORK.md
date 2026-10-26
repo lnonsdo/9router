@@ -95,21 +95,38 @@ Targets that cannot run Anthropic server tools natively keep working web search/
 Claude clients (e.g. Claude Code) routed to OpenAI-compatible backends **or** third-party
 Claude-compatible endpoints get the tools emulated in the gateway instead of silently losing them.
 
-- Native support reuses existing pipeline config — **no new capability flag**:
-  `capabilities.js` is untouched (byte-identical to upstream) and the decision is
-  "will the server tool actually reach the upstream?":
-  - native passthrough (`anthropic`, `anthropic-compatible-*`) → the tool rides through;
-  - a Claude transport whose `quirks.claudeSupportedToolTypes` whitelists **every**
-    requested type (DeepSeek's Anthropic endpoint, and now `ark-ap-provider` for
-    `web_search`) → `prepareClaudeRequest` forwards it;
-  - everything else emulates. This matters because `prepareClaudeRequest` strips
-    non-function tools for every other provider, so a Claude-format wire alone is
-    not native support: the model's `search` flag being true (all Claude/GPT ids
-    resolve that way) does not change the fact that the tool would be deleted
-    before dispatch. Partial whitelist coverage also emulates, since the uncovered
-    tool would otherwise vanish.
-  - The OpenAI wire has no Anthropic server tool type at all, so it always emulates.
-  - **Live probe (2026-10-26)** — which upstreams really execute the tools:
+- **Scope: the emulator only sees Claude-format clients.** `planServerToolEmulation`
+  returns null for every other source format, so a Codex / Responses request is never
+  emulated by it. Native support is therefore a **per-wire** question, not a
+  per-provider one:
+  - **Claude wire** (`POST /v1/messages` → the provider's `format: "claude"` transport):
+    - native passthrough (`anthropic`, `anthropic-compatible-*`) → the tool rides through;
+    - a provider whose top-level `transport.quirks.claudeSupportedToolTypes` whitelists
+      **every** requested type (DeepSeek, both Ark endpoints for `web_search`) →
+      `prepareClaudeRequest` forwards it;
+    - everything else emulates. This matters because `prepareClaudeRequest` strips
+      non-function tools for every other provider, so a Claude-format wire alone is
+      not native support: the model's `search` flag being true (all Claude/GPT ids
+      resolve that way) does not change the fact that the tool would be deleted
+      before dispatch. Partial whitelist coverage also emulates, since the uncovered
+      tool would otherwise vanish.
+  - **Codex / Responses wire** (`POST /v1/responses` → the provider's
+    `format: "openai-responses"` transport): when the provider declares that transport,
+    `sourceFormat === targetFormat`, `translateRequest` is a no-op and the hosted tool
+    `{ type: "web_search" }` reaches the upstream **untouched**. No whitelist is involved
+    and the adapter never runs. The coding-plan endpoint documents this path, so Codex
+    web search is native there without any fork code — only the 豆包搜索 entitlement
+    gate applies. (`ark-ap-provider` also exposes `/responses`, but its hosted-search
+    support is not covered by that doc and was not probed.) (If a provider has no
+    Responses transport, the body is pivoted through OpenAI Chat instead, where hosted
+    tools are dropped — see the gap note below.)
+  - **OpenAI Chat wire**: no Anthropic server tool type at all, so it always emulates
+    (this only matters for Claude clients translated onto that wire).
+  - **Not covered in v1:** a Responses client routed to an endpoint that rejects hosted
+    web search (open-design, probed 400) gets the upstream error — there is no emulation
+    fallback for Responses sources.
+  - **Live probe (2026-10-26), Claude wire** — which upstreams really execute the
+    Anthropic server tools when a Claude client hits their `/v1/messages`:
 
     | endpoint | `web_search_20250305` | `web_fetch_20250910` |
     |---|---|---|
@@ -118,9 +135,18 @@ Claude-compatible endpoints get the tools emulated in the gateway instead of sil
     | `volcengine-ark` (coding plan, `/api/coding/v1/messages`) | **native per docs**, but the account must activate 豆包搜索 Custom 版 (控制台 > 开通管理 > 应用组件库 > 豆包搜索); unactivated accounts get HTTP 403 `Access denied for web search … verify the activation status` | not offered |
     | `open-design` (`/v1/messages`, all Claude ids) | HTTP 400 `unsupported Responses tool type "web_search" … on Chat route` (also with `anthropic-beta: web-search-2025-03-05`, and on `/v1/responses` with the hosted tool) | HTTP 400, same |
 
-    Doc reference for the coding plan:
+    Doc reference for the coding plan (Claude wire):
     `console.volcengine.com/ark/region:cn-beijing/docs/coding-plan-personal-ai-claude-code.md`
     §"使用 Claude Code 的 Web Search 功能" — "通过 Messages API 接入的 Claude Code 也可原生使用 Web Search 功能".
+
+    The **Codex wire is a different mechanism and needs no fork config**: the
+    `coding-plan-personal-ai-codex.md` doc says "通过 Responses API 接入的 Codex 也可原生使用
+    Web Search 功能", i.e. the client's hosted `{ "type": "web_search" }` tool on
+    `POST /api/coding/v3/responses`. `resolveTransport(provider, "openai-responses")`
+    selects the matching transport, `sourceFormat === targetFormat` skips translation,
+    so the tool is forwarded verbatim. Same 豆包搜索 Custom 版 activation gate; the doc
+    also notes each search triggers an extra model call to summarize the results.
+    Doc: `console.volcengine.com/ark/region:cn-beijing/docs/coding-plan-personal-ai-codex.md`.
 
     Both Ark providers declare
     `quirks.claudeSupportedToolTypes: ["web_search_20250305", "web_search_20260209"]`
@@ -229,7 +255,8 @@ conflicts, these are the only anchors to re-apply:
 | `src/lib/db/repos/settingsRepo.js` | 10 lines | `DEFAULT_SETTINGS.webToolsAdapter` (sits next to `capacityAdapter`) |
 | `src/app/(dashboard)/dashboard/combos/page.js` | ~25 lines | import, one `useState`, one normalize call in `fetchData`, one save handler, one render line |
 | `open-sse/translator/schema/blocks.js` | 1 line | `CLAUDE_BLOCK.WEB_FETCH_TOOL_RESULT` |
-| `open-sse/providers/registry/ark-ap-provider.js` | 14 lines | fork-only provider — `transport.quirks.claudeSupportedToolTypes` |
+| `open-sse/providers/registry/volcengine-ark.js` | ~18 lines (quirks + comments) | top-level `transport.quirks.claudeSupportedToolTypes`; Claude wire only — Codex already passes through via the `openai-responses` transport |
+| `open-sse/providers/registry/ark-ap-provider.js` | ~18 lines | fork-only provider — `transport.quirks.claudeSupportedToolTypes` |
 
 `open-sse/providers/capabilities.js` has **zero** diff from upstream by design (the adapter
 reuses `search` / `claudeSupportedToolTypes` instead of adding a capability).
