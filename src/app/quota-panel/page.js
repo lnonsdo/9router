@@ -322,7 +322,10 @@ function MenuRow({ icon, label, onClick, trailing = null, danger = false }) {
         danger ? "text-red-600 dark:text-red-400" : "text-text-primary"
       }`}
     >
-      <span className={`material-symbols-outlined text-[13px] ${danger ? "" : "text-text-muted"}`}>
+      <span
+        className={`material-symbols-outlined ${danger ? "" : "text-text-muted"}`}
+        style={{ fontSize: 13 }}
+      >
         {icon}
       </span>
       <span className="flex-1">{label}</span>
@@ -572,7 +575,8 @@ export default function QuotaPanelPage() {
                 className="flex h-6 w-6 items-center justify-center rounded-md transition-colors hover:bg-black/5 dark:hover:bg-white/5"
               >
                 <span
-                  className={`material-symbols-outlined text-[15px] text-text-muted ${refreshing ? "animate-spin" : ""}`}
+                  className={`material-symbols-outlined text-text-muted ${refreshing ? "animate-spin" : ""}`}
+                  style={{ fontSize: 15 }}
                 >
                   refresh
                 </span>
@@ -625,7 +629,10 @@ export default function QuotaPanelPage() {
                 }}
                 className="flex items-center gap-0.5 rounded-md px-1 py-0.5 text-[10px] text-text-muted transition-colors hover:text-text-primary"
               >
-                <span className="material-symbols-outlined text-[13px]">
+                <span
+                  className="material-symbols-outlined"
+                  style={{ fontSize: 13 }}
+                >
                   {consoleOpen ? "keyboard_arrow_down" : "keyboard_arrow_right"}
                 </span>
                 Console
@@ -641,7 +648,10 @@ export default function QuotaPanelPage() {
                       consolePaused ? "text-amber-500" : "text-text-muted hover:text-text-primary"
                     }`}
                   >
-                    <span className="material-symbols-outlined text-[12px]">
+                    <span
+                      className="material-symbols-outlined"
+                      style={{ fontSize: 12 }}
+                    >
                       {consolePaused ? "lock" : "lock_open"}
                     </span>
                   </button>
@@ -651,7 +661,12 @@ export default function QuotaPanelPage() {
                     aria-label="Clear console"
                     className="flex h-5 w-5 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-black/5 hover:text-text-primary dark:hover:bg-white/5"
                   >
-                    <span className="material-symbols-outlined text-[12px]">delete</span>
+                    <span
+                      className="material-symbols-outlined"
+                      style={{ fontSize: 12 }}
+                    >
+                      delete
+                    </span>
                   </button>
                 </div>
               ) : null}

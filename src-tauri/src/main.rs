@@ -218,10 +218,13 @@ fn main() {
         .expect("error while running 9Router desktop")
         .run(|app, event| {
             match event {
-                tauri::RunEvent::ExitRequested { api, .. } => {
-                    // Prevent exit when window is closed in lightweight mode.
-                    // The app stays alive with just the tray icon.
-                    if app.get_webview_window("main").is_none() {
+                tauri::RunEvent::ExitRequested { code, api, .. } => {
+                    // Stay alive in the tray only when the last window closed
+                    // by itself (lightweight mode). An explicit exit — panel
+                    // Quit, ⌘Q — carries a Some(code) and must always be
+                    // honored, otherwise quitting from lightweight mode would
+                    // leave the app running with a dead server.
+                    if code.is_none() && app.get_webview_window("main").is_none() {
                         api.prevent_exit();
                     }
                 }

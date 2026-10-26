@@ -69,11 +69,15 @@ pub(crate) fn register(app: &AppHandle) {
         }
     });
 
-    // Usage panel "Quit" row.
+    // Usage panel "Quit" row. stop_server waits up to 3s for graceful
+    // shutdown — run it off the main thread so the UI never freezes.
     let handle_for_quit = app.clone();
     app.listen("quit-app", move |_| {
         boot_log("quit-app: stopping server and exiting");
-        stop_server(&handle_for_quit);
-        handle_for_quit.exit(0);
+        let handle = handle_for_quit.clone();
+        std::thread::spawn(move || {
+            stop_server(&handle);
+            handle.exit(0);
+        });
     });
 }

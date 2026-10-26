@@ -55,8 +55,13 @@ pub(crate) fn build_menu(app: &AppHandle) -> tauri::Result<()> {
 pub(crate) fn handle_menu_event(app: &AppHandle, id: &str) {
     match id {
         "quit" => {
-            stop_server(app);
-            app.exit(0);
+            // stop_server waits up to 3s for graceful shutdown — run it off
+            // the main thread so ⌘Q never freezes the UI.
+            let handle = app.clone();
+            std::thread::spawn(move || {
+                stop_server(&handle);
+                handle.exit(0);
+            });
         }
         "hide" => {
             if let Some(win) = app.get_webview_window("main") {
