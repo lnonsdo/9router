@@ -216,14 +216,14 @@ describe("handleChatCore server tool emulation (Web Tools Adapter)", () => {
       if (executedBodies.length === 1) {
         return {
           response: claudeJson([{ type: "tool_use", id: "toolu_u1", name: "web_search", input: { query: "rust vs go" } }], "tool_use"),
-          url: "https://api.deepseek.com/anthropic/v1/messages",
+          url: "https://amr-link.open-design.ai/v1/messages",
           headers: {},
           transformedBody: null,
         };
       }
       return {
         response: claudeJson([{ type: "text", text: "claude-target answer" }]),
-        url: "https://api.deepseek.com/anthropic/v1/messages",
+        url: "https://amr-link.open-design.ai/v1/messages",
         headers: {},
         transformedBody: null,
       };
@@ -231,7 +231,7 @@ describe("handleChatCore server tool emulation (Web Tools Adapter)", () => {
 
     const result = await handleChatCore({
       body: claudeBody,
-      modelInfo: { provider: "deepseek", model: "deepseek-chat" },
+      modelInfo: { provider: "open-design", model: "claude-sonnet-5" },
       credentials: { apiKey: "test-key", providerSpecificData: {} },
       log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), line: vi.fn(), tagForSession: () => "T" },
       connectionId: "test-conn",
@@ -246,14 +246,16 @@ describe("handleChatCore server tool emulation (Web Tools Adapter)", () => {
       executeServerTool: async () => ({ ok: true, data: { results: [{ title: "Rust vs Go", url: "https://x.io/a", snippet: "bench" }] } }),
       clientRawRequest: {
         endpoint: "/v1/messages",
-        body: { model: "deepseek/deepseek-chat" },
+        body: { model: "od/claude-sonnet-5" },
         headers: { accept: "text/event-stream" },
       },
     });
     expect(result.success).toBe(true);
 
-    // Third-party claude endpoints do not run server tools: emulation kicks in
-    // and injects the tool in the Claude shape (input_schema), non-streaming.
+    // A Claude wire alone is not native support: open-design has no
+    // claudeSupportedToolTypes whitelist, so prepareClaudeRequest would strip
+    // the server tool. Emulation must engage even though the model id resolves
+    // search:true, and the injected tool uses the Claude shape (input_schema).
     expect(executedBodies[0].stream).toBe(false);
     const injected = executedBodies[0].tools.find(t => t.name === "web_search");
     expect(injected.input_schema.required).toEqual(["query"]);

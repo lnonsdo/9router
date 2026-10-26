@@ -28,7 +28,8 @@
 import { FORMATS } from "../translator/formats.js";
 import { CLAUDE_BLOCK, OPENAI_BLOCK, ROLE } from "../translator/schema/index.js";
 import { CLAUDE_STOP } from "../translator/schema/finishReasons.js";
-import { getCapabilitiesForModel } from "../providers/capabilities.js";
+import { PROVIDERS } from "../config/providers.js";
+import { isNativePassthrough } from "../utils/clientDetector.js";
 import { openAICompletionToClaudeMessage } from "../translator/concerns/claudeMessage.js";
 import { parseSSEToOpenAIResponse } from "../handlers/chatCore/sseToJsonHandler.js";
 import { withBodyTimeout } from "../utils/stream.js";
@@ -45,15 +46,8 @@ const WEB_FETCH_MAX_CHARS = 50000;  // rough stand-in for Anthropic's max_conten
 const DEFAULT_MAX_USES_PER_TOOL = 5;
 
 // Proxy gateways observed to normalize away Anthropic-specific blocks (the
-// tool_reference → HTTP 422 class of failures). A Claude model served through
-// one of these can advertise `search: true` upstream yet still not execute
-// server tools on this hop, so emulation stays on. Empty by default: adding a
-// provider here requires evidence, not suspicion.
-const SERVER_TOOL_UNSAFE_PROXIES = new Set();
-
-function isUnsafeProxy(provider) {
-  return SERVER_TOOL_UNSAFE_PROXIES.has(String(provider || ""));
-}
+// tool_reference → HTTP 422 class of failures) are not a separate signal: they
+// simply have no `claudeSupportedToolTypes` whitelist, so they emulate.
 const EMULATION_TOTAL_TIMEOUT_MS = 120000;
 
 // settings.webToolsAdapter entry shape: { enabled, roundRobin, providers: string[] }
@@ -66,7 +60,7 @@ function adapterEntry(adapterConfig, kind) {
 
 /**
  * Scan a Claude-format request body for server tools we can emulate.
- * @returns {Array<{kind: string, name: string, maxUses: number}>}
+ * @returns {Array<{kind: string, type: string, name: string, maxUses: number}>}
  */
 export function detectServerToolRequests(body) {
   const tools = Array.isArray(body?.tools) ? body.tools : [];
@@ -77,6 +71,7 @@ export function detectServerToolRequests(body) {
     if (!spec) continue;
     found.push({
       kind: spec.kind,
+      type,
       name: String(tool.name || spec.defaultName),
       maxUses: Number.isInteger(tool.max_uses) && tool.max_uses > 0 ? Math.min(tool.max_uses, 16) : DEFAULT_MAX_USES_PER_TOOL,
     });
@@ -162,35 +157,46 @@ export function downgradeServerToolHistory(body) {
 }
 
 /**
+ * Does this target actually receive the server tool?
+ *
+ * Two ways a request can reach an upstream with `web_search_20250305` intact:
+ *   • native passthrough (Claude client → Anthropic / anthropic-compatible-*)
+ *   • the provider's Claude transport declares `claudeSupportedToolTypes`
+ *     (prepareClaudeRequest keeps whitelisted types; DeepSeek is the case today)
+ *
+ * The model's own `search` capability is NOT the signal: it says the model could
+ * search, but every other provider on this wire has the tool stripped by
+ * prepareClaudeRequest before dispatch — deciding "native" on `search` alone
+ * silently loses web access on gateways like open-design or the Ark endpoints.
+ */
+function targetRunsServerTools(provider, tools) {
+  if (isNativePassthrough("claude", provider)) return true;
+  const supported = PROVIDERS[provider]?.quirks?.claudeSupportedToolTypes;
+  if (!Array.isArray(supported) || supported.length === 0) return false;
+  // Partial support would leave part of the requested toolset stripped, so
+  // require every requested type to be whitelisted before stepping aside.
+  return tools.every(t => supported.includes(t.type));
+}
+
+/**
  * Decide whether a request needs server tool emulation, and prepare the
  * downgraded request body. Returns null when emulation does not apply —
  * the caller then proceeds exactly as before.
  *
- * Native execution is only possible on a Claude-format wire: the model's own
- * `search` capability (capabilities.js — "built-in web search / grounding")
- * means the upstream can run the tool itself. On the OpenAI wire no Anthropic
- * server tool type exists at all, so `search` must not suppress emulation there
- * (a search-capable model would only see a parameterless function tool).
- *
- * `search` is pattern-derived from the model id, so it cannot know whether a
- * proxy hop strips Anthropic-specific blocks. Aggregator gateways are trusted
- * by default; SERVER_TOOL_UNSAFE_PROXIES is the evidence-driven escape hatch.
+ * The OpenAI wire has no Anthropic server tool type at all, so it always
+ * emulates; a Claude-format wire only steps aside when targetRunsServerTools().
  */
-export function planServerToolEmulation({ body, sourceFormat, targetFormat, provider, model, adapterConfig }) {
+export function planServerToolEmulation({ body, sourceFormat, targetFormat, provider, adapterConfig }) {
   // V1 scope: Claude-format clients (Claude Code). OpenAI Responses hosted
   // tools remain a later phase.
   if (sourceFormat !== FORMATS.CLAUDE) return null;
   // Emulatable targets: OpenAI-compatible backends and Claude-compatible endpoints.
   if (targetFormat !== FORMATS.OPENAI && targetFormat !== FORMATS.CLAUDE) return null;
-  if (targetFormat === FORMATS.CLAUDE
-    && !isUnsafeProxy(provider)
-    && getCapabilitiesForModel(provider, model).search === true) {
-    return null;
-  }
 
   const requested = detectServerToolRequests(body);
   const emulatable = requested.filter(t => adapterEntry(adapterConfig, t.kind));
   if (emulatable.length === 0) return null;
+  if (targetFormat === FORMATS.CLAUDE && targetRunsServerTools(provider, requested)) return null;
 
   let degradedBody = downgradeServerToolHistory(body);
   // Drop the emulated server tools from the outgoing tool list: the translator

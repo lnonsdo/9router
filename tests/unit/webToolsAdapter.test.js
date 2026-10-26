@@ -7,7 +7,6 @@ import {
   runServerToolEmulation,
   claudeMessageToSseBody,
 } from "../../open-sse/services/serverToolEmulator.js";
-import { getCapabilitiesForModel } from "../../open-sse/providers/capabilities.js";
 
 const { searchCoreMock, fetchCoreMock } = vi.hoisted(() => ({
   searchCoreMock: vi.fn(),
@@ -132,59 +131,61 @@ const baseBody = {
   messages: [{ role: "user", content: [{ type: "text", text: "search the web" }] }],
 };
 
-describe("planServerToolEmulation — native execution via the `search` capability", () => {
+describe("planServerToolEmulation — native only when the tool survives the pipeline", () => {
   const planArgs = (overrides = {}) => ({
     body: baseBody,
     sourceFormat: "claude",
     targetFormat: "openai",
     provider: "openrouter",
-    model: "deepseek-v4.1-flash",
     adapterConfig,
     ...overrides,
   });
 
-  it("steps aside on a Claude wire when the model advertises built-in search", () => {
-    // `search` is the existing per-model capability (capabilities.js), not a
-    // parallel webTools flag: all Claude models resolve search:true, so Anthropic
-    // itself and any aggregator forwarding a Claude model are left native.
-    expect(getCapabilitiesForModel("anthropic", "claude-sonnet-4-5").search).toBe(true);
-    expect(getCapabilitiesForModel("openrouter", "anthropic/claude-sonnet-4").search).toBe(true);
-    expect(planServerToolEmulation(planArgs({ targetFormat: "claude", provider: "anthropic", model: "claude-sonnet-4-5" }))).toBeNull();
-    expect(planServerToolEmulation(planArgs({ targetFormat: "claude", provider: "openrouter", model: "anthropic/claude-sonnet-4" }))).toBeNull();
+  it("steps aside for native passthrough providers (Anthropic)", () => {
+    // Claude client → Anthropic is a passthrough pair: no translation, tool intact.
+    expect(planServerToolEmulation(planArgs({ targetFormat: "claude", provider: "anthropic" }))).toBeNull();
   });
 
-  it("still emulates on a Claude wire when the model has no native search", () => {
-    expect(getCapabilitiesForModel("deepseek", "deepseek-chat").search).toBe(false);
-    const plan = planServerToolEmulation(planArgs({ targetFormat: "claude", provider: "deepseek", model: "deepseek-chat" }));
-    expect(plan).not.toBeNull();
-    expect(plan.tools.map(t => t.kind)).toEqual(["web_search", "web_fetch"]);
+  it("steps aside when the Claude transport whitelists the requested tool types", () => {
+    // DeepSeek's Anthropic endpoint accepts web_search_* (claudeSupportedToolTypes);
+    // prepareClaudeRequest forwards them, so the upstream executes the tool.
+    const body = { ...baseBody, tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }] };
+    expect(planServerToolEmulation(planArgs({ body, targetFormat: "claude", provider: "deepseek" }))).toBeNull();
   });
 
-  it("always emulates on the OpenAI wire, whatever `search` says", () => {
-    // A search-capable OpenAI model (gpt-5.5) cannot receive an Anthropic server
-    // tool: the wire has no such tool type, and the translator would only emit a
-    // parameterless function tool. Trusting `search` here would lose web access.
-    expect(getCapabilitiesForModel("openai", "gpt-5.5").search).toBe(true);
-    const plan = planServerToolEmulation(planArgs({ targetFormat: "openai", provider: "openai", model: "gpt-5.5" }));
-    expect(plan).not.toBeNull();
+  it("emulates when only part of the requested toolset is whitelisted", () => {
+    // web_search_* is whitelisted for DeepSeek but web_fetch_* is not, so
+    // stepping aside would leave the fetch tool stripped with no fallback.
+    expect(planServerToolEmulation(planArgs({ targetFormat: "claude", provider: "deepseek" }))).not.toBeNull();
   });
 
-  it("plans emulation for a Claude request routed to an OpenAI-compatible target", () => {
+  it("emulates for Ark / Open Design even though their model ids look search-capable", () => {
+    // These providers have no claudeSupportedToolTypes whitelist, so
+    // prepareClaudeRequest strips the server tool before dispatch. `search`
+    // (true for open-design's Claude/GPT model ids) must not be read as
+    // "the upstream executes it" — doing so silently loses web access.
+    for (const provider of ["volcengine-ark", "ark-ap-provider", "open-design"]) {
+      const plan = planServerToolEmulation(planArgs({ targetFormat: "claude", provider }));
+      expect(plan, provider).not.toBeNull();
+      expect(plan.tools.map(t => t.kind), provider).toEqual(["web_search", "web_fetch"]);
+    }
+  });
+
+  it("always emulates on the OpenAI wire, whatever the model advertises", () => {
+    // The OpenAI wire has no Anthropic server tool type at all; the translator
+    // would only emit a parameterless function tool.
+    expect(planServerToolEmulation(planArgs({ targetFormat: "openai", provider: "openai" }))).not.toBeNull();
+  });
+
+  it("plans emulation and strips the server tools from the outgoing list", () => {
     const plan = planServerToolEmulation(planArgs());
     expect(plan).not.toBeNull();
     expect(plan.tools.map(t => t.kind)).toEqual(["web_search", "web_fetch"]);
-    // The emulated server tools are removed from the outgoing tool list.
     expect(plan.degradedBody.tools.map(t => t.type)).toEqual(["function"]);
     expect(plan.degradedBody.messages).toEqual(baseBody.messages);
   });
 
-  it("also plans for third-party Claude-compatible targets (wire format ≠ server tool support)", () => {
-    const plan = planServerToolEmulation(planArgs({ targetFormat: "claude" }));
-    expect(plan).not.toBeNull();
-    expect(plan.tools.map(t => t.kind)).toEqual(["web_search", "web_fetch"]);
-  });
-
-  it("keeps server tools when the adapter kind is disabled or unconfigured", () => {
+  it("does not activate when the adapter kind is disabled or unconfigured", () => {
     const plan = planServerToolEmulation(planArgs({
       adapterConfig: { webSearch: { enabled: true, providers: [] }, webFetch: { enabled: false, providers: ["x"] } },
     }));
@@ -201,8 +202,8 @@ describe("detectServerToolRequests", () => {
   it("detects web_search/web_fetch server tools with their max_uses", () => {
     const found = detectServerToolRequests(baseBody);
     expect(found).toEqual([
-      { kind: "web_search", name: "web_search", maxUses: 3 },
-      { kind: "web_fetch", name: "web_fetch", maxUses: 5 }, // default when absent
+      { kind: "web_search", type: "web_search_20250305", name: "web_search", maxUses: 3 },
+      { kind: "web_fetch", type: "web_fetch_20250910", name: "web_fetch", maxUses: 5 }, // default when absent
     ]);
   });
 

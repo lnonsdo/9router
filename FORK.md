@@ -95,18 +95,20 @@ Targets that cannot run Anthropic server tools natively keep working web search/
 Claude clients (e.g. Claude Code) routed to OpenAI-compatible backends **or** third-party
 Claude-compatible endpoints get the tools emulated in the gateway instead of silently losing them.
 
-- Native support reuses the existing per-model **`search`** capability
-  (`capabilities.js` — "built-in web search / grounding"), resolved through the same
-  table/pattern/floor chain as `vision`. No parallel capability was added, so
-  `capabilities.js` stays byte-identical to upstream and new models inherit the right
-  behavior automatically.
-  - The check is scoped to the **wire format**: on a Claude-format wire `search: true`
-    means the upstream executes the tool itself → passthrough. On the OpenAI wire no
-    Anthropic server tool type exists at all, so emulation always applies — trusting
-    `search` there would hand the model a parameterless function tool and lose web access.
-  - `search` is pattern-derived from the model id and cannot know whether a proxy hop
-    strips Anthropic blocks (the `tool_reference` 422 class), so aggregators are trusted
-    by default with `SERVER_TOOL_UNSAFE_PROXIES` as an evidence-driven escape hatch.
+- Native support reuses existing pipeline config — **no new capability flag**:
+  `capabilities.js` is untouched (byte-identical to upstream) and the decision is
+  "will the server tool actually reach the upstream?":
+  - native passthrough (`anthropic`, `anthropic-compatible-*`) → the tool rides through;
+  - a Claude transport whose `quirks.claudeSupportedToolTypes` whitelists **every**
+    requested type (DeepSeek's Anthropic endpoint today) → `prepareClaudeRequest`
+    forwards it;
+  - everything else emulates. This matters because `prepareClaudeRequest` strips
+    non-function tools for every other provider, so a Claude-format wire alone is
+    not native support: Ark and Open Design have no whitelist, and the model's
+    `search` flag being true (all Claude/GPT ids resolve that way) does not change
+    the fact that the tool would be deleted before dispatch. Partial whitelist
+    coverage also emulates, since the uncovered tool would otherwise vanish.
+  - The OpenAI wire has no Anthropic server tool type at all, so it always emulates.
 - `open-sse/services/serverToolEmulator.js` — detection, history downgrade, tool injection,
   the emulation loop and the client-facing SSE synthesizer:
   - Emulated rounds run upstream **non-streaming** (the loop buffers complete rounds), then the
