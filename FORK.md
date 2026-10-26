@@ -11,7 +11,7 @@ the upstream `README.md` to avoid merge conflicts when syncing from upstream.
 
 ## Changes vs upstream `master`
 
-34 commits unique to `dev` as of 2026-10-24 (range 2026-07-10 → 2026-10-24), grouped by area.
+44 commits unique to `dev` as of 2026-10-26 (range 2026-07-10 → 2026-10-26), grouped by area.
 Hashes are the **current** `dev` hashes — an earlier rebase invalidated the ones previously
 listed here, so treat this list as the source of truth.
 
@@ -86,9 +86,35 @@ A fork-only usage stack on top of upstream's flat request log.
   comes from the console session cookie — `getOpenDesignUsage()` in `services/usage/misc.js`;
   non-entitled plan models answer `403 tier_model_not_entitled`.
 
+### 🧠 Thinking wire selection (multi-endpoint providers)
+- `open-sse/providers/registry/open-design.js` — the Claude transport now declares
+  `thinkingFormat: "claude-budget"`. `/v1/messages` is a native Anthropic surface and must
+  receive `thinking: { type: "enabled", budget_tokens: N }`. Before this, neither the
+  `transports[]` entries nor the single `transport` block declared a thinking format, so
+  `resolveFormat` fell through to the model capability — `deepseek-v4.1-flash` resolved to
+  `thinkingFormat: "deepseek"` — and sent `thinking:{type:"enabled"}` plus
+  `reasoning_effort:"max"` to the Anthropic wire. `deepseek-v4.1-flash` then intermittently
+  ended an agent turn with a one-sentence status and `stop_reason:"end_turn"` instead of its
+  tool call. Replaying the exact request body: 2 of 11 baseline runs ended prematurely, versus
+  0 of 9 with the Anthropic thinking shape (and 5 of 5 with `thinking:{type:"enabled"}` and no
+  `reasoning_effort`).
+- Scope: `transports[].thinkingFormat` applies only when the outgoing wire matches that
+  transport's `format`, and it outranks the single `transport.thinkingFormat`, the
+  `capabilities.js` model entry, and the wire default (`FORMAT_TO_NATIVE`). Open Design's Chat
+  and Responses transports keep the model's DeepSeek effort lane; only `/v1/messages` changes.
+  The same mechanism is already used by Muse and OpenCode Go for their `/v1/responses` wire.
+- Tests: `tests/unit/open-design-thinking-transport.test.js`.
+
 ### 🔁 Streaming / tool / reasoning improvements
 - `feat: add streaming reliability, tool handling, and reasoning improvements` (`b3378a01`)
 - `open-sse/utils/stream.js`, `reasoningCache.js`, `textualToolCall.js`, translator schema/tool-call coercions.
+- `fix(stream): correct passthrough termination and Claude aggregation` (2026-10-26) —
+  `createPassthroughStreamWithLogger` now receives `sourceFormat`, so
+  `shouldEmitDoneTerminator` is false for Claude clients and they no longer get a non-standard
+  `data: [DONE]` after `message_stop`. The same change dedupes an upstream `[DONE]` for OpenAI
+  passthrough streams and aggregates `text_delta` / `thinking_delta` for request details instead
+  of reporting `[Empty streaming response]`.
+  Tests: `tests/unit/passthrough-done-terminator.test.js`.
 
 ### 🌐 Web Tools Adapter (server tool emulation)
 Targets that cannot run the client's web tool natively keep working web search/fetch: the
@@ -252,11 +278,16 @@ conflicts, these are the only anchors to re-apply:
 | `src/lib/db/repos/settingsRepo.js` | 10 lines | `DEFAULT_SETTINGS.webToolsAdapter` (sits next to `capacityAdapter`) |
 | `src/app/(dashboard)/dashboard/combos/page.js` | ~25 lines | import, one `useState`, one normalize call in `fetchData`, one save handler, one render line |
 | `open-sse/translator/schema/blocks.js` | 1 line | `CLAUDE_BLOCK.WEB_FETCH_TOOL_RESULT` |
+| `open-sse/utils/stream.js` | ~25 lines | passthrough block: track an upstream `[DONE]`, aggregate Claude `content_block_delta`; `createPassthroughStreamWithLogger` gains `sourceFormat` |
+| `open-sse/handlers/chatCore/streamingHandler.js` | 1 line | pass `sourceFormat` as the 9th arg to `createPassthroughStreamWithLogger` |
+| `open-sse/providers/capabilities.js` | ~63 lines | fork-added `PROVIDER_CAPABILITIES` blocks (`ark-ap-provider`, `volcengine-ark`, `opendesign`) plus the `qwen3.8` pattern; keep the keys aligned with the alias the web path passes |
 | `open-sse/providers/registry/volcengine-ark.js` | ~22 lines (quirks + comments) | top-level `transport.quirks.claudeSupportedToolTypes`; Responses stays native by default |
 | `open-sse/providers/registry/ark-ap-provider.js` | ~20 lines | fork-only provider — `transport.quirks.claudeSupportedToolTypes` |
 
-`open-sse/providers/capabilities.js` has **zero** diff from upstream by design (native support
-is declared on the provider transports instead of adding a capability flag).
+`open-sse/providers/capabilities.js` is **not** zero-diff: the fork carries provider tables for
+`ark-ap-provider`, `volcengine-ark` and `opendesign`, plus a `qwen3.8` pattern. It is one of the
+highest-churn upstream files (60 commits since 2026-07-01), so a merge will usually conflict
+there; re-apply the alias-keyed fork blocks on top of upstream's table.
 
 Also worth knowing when syncing: `GET /v1/models` on open-design is **account-scoped** — it
 lists what the current membership tier is entitled to, not the provider's full catalogue.

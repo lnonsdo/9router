@@ -244,6 +244,10 @@ export function createSSEStream(options = {}) {
             continue;
           }
 
+          // Remember that the upstream already sent the OpenAI sentinel so the
+          // flush below does not append a second [DONE].
+          if (/^data:\s*\[DONE\]$/.test(trimmed)) streamDoneSent = true;
+
           if (trimmed.startsWith("data:") && trimmed.slice(5).trim() !== "[DONE]") {
             try {
               let parsed = JSON.parse(trimmed.slice(5).trim());
@@ -339,6 +343,20 @@ export function createSSEStream(options = {}) {
               if (parsed.usage) {
                 const extracted = extractUsage(parsed);
                 if (extracted) usage = mergeUsage(usage, extracted);
+              }
+
+              // Claude wire: the OpenAI-shaped accumulation below never sees
+              // content_block_delta, so a passthrough Claude stream would report
+              // empty content in request details (and estimate usage as zero).
+              if (sourceFormat === FORMATS.CLAUDE && parsed.type === "content_block_delta") {
+                const delta = parsed.delta || {};
+                if (delta.type === "text_delta" && typeof delta.text === "string") {
+                  totalContentLength += delta.text.length;
+                  accumulatedContent += delta.text;
+                } else if (delta.type === "thinking_delta" && typeof delta.thinking === "string") {
+                  totalContentLength += delta.thinking.length;
+                  accumulatedThinking += delta.thinking;
+                }
               }
 
               if (!hasValuableContent(parsed, FORMATS.OPENAI)) {
@@ -727,10 +745,15 @@ export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, p
   });
 }
 
-export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, toolNameMap = null) {
+// `sourceFormat` is the client wire, not the provider wire: passthrough means
+// both are the same, but the terminating sentinel is protocol-specific. Without
+// it shouldEmitDoneTerminator defaults to true and a Claude stream gets an extra
+// non-standard `data: [DONE]` after message_stop.
+export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, toolNameMap = null, sourceFormat = null) {
   return createSSEStream({
     mode: STREAM_MODE.PASSTHROUGH,
     provider,
+    sourceFormat,
     reqLogger,
     toolNameMap,
     model,

@@ -80,6 +80,14 @@ export default {
       format: "claude",
       baseUrl: "https://amr-link.open-design.ai/v1/messages",
       auth: { combined: true, header: "x-api-key", scheme: "raw", anthropicVersion: true },
+      // /v1/messages is a native Anthropic surface, so thinking must be the
+      // Anthropic shape: {type:"enabled", budget_tokens}. Without this the model
+      // capability's Chat-wire dialect (thinking:{type:"enabled"} with no budget
+      // + reasoning_effort) leaks onto this endpoint, and deepseek-v4.1-flash
+      // intermittently ends a tool turn with a one-sentence status and
+      // stop_reason "end_turn" instead of emitting its tool call. The Chat and
+      // Responses transports keep the effort lane.
+      thinkingFormat: "claude-budget",
     },
   ],
   models: [
