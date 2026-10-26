@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability for the 9Router desktop shell (main window + tray).",
-  "windows": ["main"],
+  "description": "Default capability for the 9Router desktop shell (main window, usage panel + tray).",
+  "windows": ["main", "quota-panel"],
   "remote": {
     "urls": ["http://127.0.0.1:20129/*"]
   },
@@ -13,11 +13,13 @@
     "core:window:allow-show",
     "core:window:allow-hide",
     "core:window:allow-set-focus",
+    "core:window:allow-set-size",
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",
     "core:window:allow-destroy",
     "core:event:allow-emit",
+    "core:event:allow-listen",
     "shell:allow-open"
   ]
 }

@@ -47,6 +47,7 @@ import AutoPingScheduleModal from "@/app/(dashboard)/dashboard/providers/[id]/Au
 import { getScheduleSlotLabels } from "@/shared/services/quotaPingSchedule";
 import { USAGE_SUPPORTED_PROVIDERS, AI_PROVIDERS } from "@/shared/constants/providers";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
+import { useExaDesktopSync } from "@/shared/services/desktop/exaSync";
 
 // Maps the stored providerSpecificData.authMethod to a human label for Kiro.
 // Values come from the Kiro connect flows: builder-id/idc (device code),
@@ -105,9 +106,9 @@ function getCodexResetCreditCount(quota) {
   return Number.isFinite(count) ? Math.max(0, count) : 0;
 }
 
-// Desktop auto-sync: a stale Exa snapshot is refreshed from a hidden webview
-// when the quota page opens. Manual sync still bypasses the throttle.
-const EXA_AUTO_SYNC_MS = 30 * 60 * 1000;
+// Exa desktop-sync wiring (scrape + snapshot refresh) lives in the desktop
+// service layer — see useExaDesktopSync — to keep this file's upstream delta
+// minimal.
 
 const CLAUDE_RESET_LIMIT_NAMES = {
   five_hour: "session",
@@ -184,10 +185,6 @@ export default function ProviderLimits() {
   const [showEditModal, setShowEditModal] = useState(false);
   const [selectedConnection, setSelectedConnection] = useState(null);
   const [proxyPools, setProxyPools] = useState([]);
-  // Exa's dashboard APIs are only reachable from a real browser context, so the
-  // sync button only exists in the Tauri shell (window.__TAURI_INTERNALS__).
-  const [isTauri, setIsTauri] = useState(false);
-  const exaAutoSyncAt = useRef(new Map());
   // Initialize providerFilter from URL ?provider= param so the page
   // can be bookmarked / deep-linked to a specific provider (#4217).
   const [providerFilter, _setProviderFilter] = useState(
@@ -364,22 +361,6 @@ export default function ProviderLimits() {
     [fetchQuota],
   );
 
-  // Desktop-only: open dashboard.exa.ai in a real browser context so its
-  // usage APIs are readable, then import the balance (see src-tauri/main.rs).
-  // The key prefix lets the injected script verify the logged-in Exa account
-  // actually owns this connection's API key — credits are team-level, so a
-  // shared browser session must not leak one account's balance onto another.
-  const handleExaSync = useCallback(async (connectionId, { auto = false } = {}) => {
-    try {
-      const hintRes = await fetch(`/api/providers/${connectionId}/exa-key-hint`, { cache: "no-store" });
-      const hint = hintRes.ok ? await hintRes.json().catch(() => null) : null;
-      const { emit } = await import("@tauri-apps/api/event");
-      await emit("open-exa-connect", { connectionId, keyPrefix: hint?.prefix || null, auto });
-    } catch (error) {
-      console.warn("[ProviderLimits] Exa sync requires the desktop app:", error);
-    }
-  }, []);
-
   const handleResetCodexLimit = useCallback(
     async (connectionId, provider) => {
       if ((provider !== "codex" && provider !== "claude") || resettingLimitId) return;
@@ -538,10 +519,6 @@ export default function ProviderLimits() {
   );
 
   useEffect(() => {
-    setIsTauri(typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__));
-  }, []);
-
-  useEffect(() => {
     let cancelled = false;
     fetch("/api/proxy-pools?isActive=true", { cache: "no-store" })
       .then((res) => res.json())
@@ -599,63 +576,14 @@ export default function ProviderLimits() {
     }
   }, [refreshingAll, fetchConnections, fetchQuota, page]);
 
-  // Refresh the Exa card once the desktop sync window has written its snapshot.
-  useEffect(() => {
-    if (!isTauri) return undefined;
-    let unlisten;
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const { listen } = await import("@tauri-apps/api/event");
-        unlisten = await listen("exa-sync-done", (event) => {
-          const connectionId = event?.payload?.connectionId;
-          if (connectionId) refreshProvider(connectionId, "exa");
-          else refreshAll(true);
-        });
-      } catch (error) {
-        console.warn("[ProviderLimits] Exa sync listener unavailable:", error);
-      }
-      if (cancelled && unlisten) unlisten();
-    })();
-
-    return () => {
-      cancelled = true;
-      if (unlisten) unlisten();
-    };
-  }, [isTauri, refreshProvider, refreshAll]);
-
-  // Auto-refresh a stale Exa snapshot in a hidden webview when this page loads.
-  // Only in the desktop shell (the dashboard's APIs need a real browser context)
-  // and throttled per connection so the page cannot open a window in a loop.
-  useEffect(() => {
-    if (!isTauri || connections.length === 0) return;
-
-    const now = Date.now();
-    for (const conn of connections) {
-      if (conn.provider !== "exa") continue;
-
-      const entry = quotaData[conn.id];
-      if (!entry) continue; // quota not fetched yet; the next pass will see it
-
-      const meta = entry.raw?.meta || {};
-      const syncedAt = Date.parse(meta.syncedAt || "");
-      // `staleVolume` marks a snapshot whose request-count window predates this
-      // billing month (written before the sync script asked for calendar
-      // months); the count is withheld, so re-sync instead of showing it empty.
-      const fresh = meta.source === "dashboard-sync"
-        && meta.staleVolume !== true
-        && Number.isFinite(syncedAt)
-        && now - syncedAt < EXA_AUTO_SYNC_MS;
-      if (fresh) continue;
-
-      const lastAttempt = exaAutoSyncAt.current.get(conn.id) || 0;
-      if (now - lastAttempt < EXA_AUTO_SYNC_MS) continue;
-
-      exaAutoSyncAt.current.set(conn.id, now);
-      handleExaSync(conn.id, { auto: true });
-    }
-  }, [isTauri, connections, quotaData, handleExaSync]);
+  // Exa desktop sync (dashboard scrape + snapshot refresh) lives in the
+  // desktop service layer to keep this file's upstream delta minimal.
+  const { isTauri, handleExaSync } = useExaDesktopSync({
+    connections,
+    quotaData,
+    refreshProvider,
+    refreshAll,
+  });
 
   useEffect(() => {
     const initializeData = async () => {
@@ -1499,7 +1427,8 @@ export default function ProviderLimits() {
                     />
                   </div>
                 )}
-                {quota?.message && !error && !isLoading && (
+                {/* The message-only branch above already printed it. */}
+                {quota?.message && visibleQuotas.length > 0 && !error && !isLoading && (
                   <p className="mt-2 px-1 text-[10px] leading-relaxed text-text-muted">
                     {quota.message}
                   </p>
