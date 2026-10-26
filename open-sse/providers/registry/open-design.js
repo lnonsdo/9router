@@ -76,7 +76,13 @@ export default {
   models: [
     // Claude — Design Plan
     { id: "claude-haiku-5.5", name: "Claude Haiku 5.5" },
-    // Claude — plan models
+    // Claude — plan models.
+    // NOTE: GET /v1/models is ACCOUNT-SCOPED — it lists what the current
+    // membership tier is entitled to, not the provider's full catalogue. A
+    // model missing there (or shown as "暂不支援" in the console) is gated for
+    // that plan; other tiers have it, and an unentitled call answers
+    // 403 tier_model_not_entitled. So keep the provider-level list complete
+    // and let entitlement fail at request time.
     { id: "claude-fable-5", name: "Claude Fable 5" },
     { id: "claude-fable-5.1", name: "Claude Fable 5.1" },
     { id: "claude-sonnet-5", name: "Claude Sonnet 5" },

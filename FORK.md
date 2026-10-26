@@ -204,3 +204,33 @@ git merge upstream/master   # or rebase; resolve conflicts mostly in src/
 
 > Note: README.md is NOT modified by this fork. Desktop/Volcengine docs live here in FORK.md
 > so upstream README updates can be merged without churn.
+
+## Merge guide (where this fork touches upstream files)
+
+Everything else is in **fork-only files** (new paths upstream does not have), which never
+conflict: `open-sse/services/serverToolEmulator.js`, `open-sse/services/webToolsResponse.js`,
+`src/sse/services/webToolsBridge.js`, `src/shared/components/WebToolsAdapterSection.js`,
+`tests/unit/webTools*.test.js`, `FORK.md`, and the fork-only providers
+(`open-design.js`, `ark-ap-provider.js`).
+
+The edits to **upstream files** are intentionally small and self-contained — if a merge
+conflicts, these are the only anchors to re-apply:
+
+| Upstream file | Footprint | Anchor |
+|---|---|---|
+| `open-sse/handlers/chatCore.js` | ~30 lines | `handleChatCore` signature (`webToolsAdapter`, `executeServerTool` params); plan block right after the modality prefetch; `injectEmulatedTools` right after `dedupeTools`; the `if (emuPlan)` branch right after `sharedCtx` |
+| `src/sse/handlers/chat.js` | 8 lines | import + `webToolsAdapter`/`executeServerTool` params in the `handleChatCore({…})` call |
+| `src/lib/db/repos/settingsRepo.js` | 10 lines | `DEFAULT_SETTINGS.webToolsAdapter` (sits next to `capacityAdapter`) |
+| `src/app/(dashboard)/dashboard/combos/page.js` | ~25 lines | import, one `useState`, one normalize call in `fetchData`, one save handler, one render line |
+| `open-sse/translator/schema/blocks.js` | 1 line | `CLAUDE_BLOCK.WEB_FETCH_TOOL_RESULT` |
+| `open-sse/providers/registry/ark-ap-provider.js` | 14 lines | fork-only provider — `transport.quirks.claudeSupportedToolTypes` |
+
+`open-sse/providers/capabilities.js` has **zero** diff from upstream by design (the adapter
+reuses `search` / `claudeSupportedToolTypes` instead of adding a capability).
+
+Also worth knowing when syncing: `GET /v1/models` on open-design is **account-scoped** — it
+lists what the current membership tier is entitled to, not the provider's full catalogue.
+A model missing there (or shown "暂不支援" in the console) is plan-gated for that account;
+an unentitled call answers `403 tier_model_not_entitled`. Keep the provider-level model list
+complete and let entitlement fail at request time.
+

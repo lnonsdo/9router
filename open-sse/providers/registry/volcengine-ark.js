@@ -40,12 +40,6 @@ export default {
       baseUrl: "https://ark.cn-beijing.volces.com/api/coding/v1/messages",
       headers: { ...CLAUDE_API_HEADERS },
       auth: { combined: true, header: "x-api-key", scheme: "raw" },
-      // Built-in web search is entitlement-gated per account: probing
-      // web_search_20250305 on the coding-plan surface returns HTTP 403
-      // "Access denied for web search … verify the activation status"
-      // (2026-10-26). The type is understood, but a hard 403 would not fall
-      // back to emulation, so keep this off claudeSupportedToolTypes and let
-      // the Web Tools Adapter execute the search instead.
     },
   ],
   models: [

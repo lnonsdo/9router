@@ -33,8 +33,9 @@ import { stripUnsupportedModalities } from "../translator/concerns/modality.js";
 import { prefetchRemoteImages } from "../translator/concerns/prefetch.js";
 import { defaultClaudeToolType, shouldDefaultClaudeToolType } from "../translator/concerns/toolCall.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
-import { planServerToolEmulation, injectEmulatedTools, runServerToolEmulation, claudeMessageToSseBody } from "../services/serverToolEmulator.js";
-import { extractUsageFromResponse, saveUsageStats, formatDoneLine } from "./chatCore/requestDetail.js";
+import { planServerToolEmulation, injectEmulatedTools } from "../services/serverToolEmulator.js";
+import { buildEmulatedResponse, runEmulatedExchange } from "../services/webToolsResponse.js";
+import { saveUsageStats, formatDoneLine } from "./chatCore/requestDetail.js";
 
 /**
  * Core chat handler - shared between SSE and Worker
@@ -548,86 +549,43 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   // Web Tools Adapter: run the emulation loop (upstream is non-streaming) and
   // synthesize the client response with restored server_tool_use blocks, in
-  // SSE or JSON shape depending on what the client asked for.
+  // SSE or JSON shape depending on what the client asked for. Loop + response
+  // assembly live in a fork-only module to keep this upstream file small.
   if (emuPlan) {
-    const emuResult = await runServerToolEmulation({
+    const emuResult = await runEmulatedExchange({
       firstResponse: providerResponse,
       plan: emuPlan,
       translatedBody,
       executeServerTool,
-      runUpstream: async (upstreamBody) => {
-        const r = await executor.execute({
-          model,
-          body: upstreamBody,
-          stream: false,
-          credentials,
-          providerSessionId: sessionSeed,
-          clientTool,
-          signal: streamController.signal,
-          log,
-          proxyOptions,
-          providerOverrides,
-        });
-        return r.response;
+      executor,
+      upstream: {
+        model,
+        credentials,
+        providerSessionId: sessionSeed,
+        clientTool,
+        signal: streamController.signal,
+        log,
+        proxyOptions,
+        providerOverrides,
       },
-      model: upstreamModel,
       clientModel: clientRawRequest?.body?.model || model,
       targetFormat,
       responseFormat: providerResponseFormat,
-      log,
     });
     streamController.handleComplete();
-
     if (!emuResult.ok) {
       trackDone();
       appendLog({ status: `FAILED ${emuResult.status || HTTP_STATUS.BAD_GATEWAY}` });
       return createErrorResult(emuResult.status || HTTP_STATUS.BAD_GATEWAY, emuResult.error || "Web tool emulation failed");
     }
-
-    trackDone();
-    const claudeResponse = emuResult.claudeResponse;
-    // Usage tracking wants what the router actually paid across every round;
-    // the client-facing response carries Anthropic semantics (final context size).
-    const usage = {
-      prompt_tokens: emuResult.billed?.input_tokens || claudeResponse.usage?.input_tokens || 0,
-      completion_tokens: emuResult.billed?.output_tokens || claudeResponse.usage?.output_tokens || 0,
-    };
-    appendLog({ tokens: usage, status: "200 OK" });
-    saveUsageStats({ provider, model, tokens: usage, connectionId, sessionId: sessionSeed, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
-    if (log?.line) log.line(reqTag, "📊", `${formatDoneLine({ usage, latency: { total: Date.now() - requestStartTime } })} | EMU:${emuResult.rounds}r`);
-    if (onRequestSuccess) {
-      Promise.resolve()
-        .then(onRequestSuccess)
-        .catch(err => {
-          console.error("[ChatCore] onRequestSuccess failed:", err?.message || err);
-        });
-    }
-    saveRequestDetail(buildRequestDetail({
-      provider, model, connectionId, sessionId: sessionSeed,
-      latency: { ttft: Date.now() - requestStartTime, total: Date.now() - requestStartTime },
-      tokens: usage,
-      request: extractRequestConfig(body, false),
-      providerRequest: translatedBody || null,
-      response: {
-        content: (claudeResponse.content || []).filter(b => b.type === "text").map(b => b.text).join("\n") || null,
-        thinking: (claudeResponse.content || []).filter(b => b.type === "thinking").map(b => b.thinking).join("\n") || null,
-        finish_reason: claudeResponse.stop_reason || "end_turn",
+    return buildEmulatedResponse({
+      emuResult,
+      wantsSse: clientRequestedStreaming,
+      ctx: {
+        ...sharedCtx, appendLog, trackDone, formatDoneLine, saveUsageStats, saveRequestDetail,
+        buildRequestDetail, extractRequestConfig,
       },
-      pxpipe: pxpipeSummary,
-      status: "success"
-    }, { endpoint: clientRawRequest?.endpoint || null })).catch(err => {
-      console.error("[RequestDetail] Failed to save:", err.message);
     });
-
-    const wantsSse = clientRequestedStreaming;
-    return {
-      success: true,
-      response: new Response(wantsSse ? claudeMessageToSseBody(claudeResponse) : JSON.stringify(claudeResponse), {
-        headers: wantsSse
-          ? { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive", "Access-Control-Allow-Origin": "*" }
-          : { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-      }),
-    };
   }
 
   // Provider forced streaming but client wants JSON. The Responses wire always
