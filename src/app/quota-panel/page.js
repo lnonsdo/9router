@@ -399,6 +399,12 @@ export default function QuotaPanelPage() {
     body.style.overflow = "hidden";
   }, []);
 
+  // Tell the shell this page is mounted so the first open can reveal the
+  // popover immediately (card + loading state visible, no dead silence).
+  useEffect(() => {
+    if (isDesktop()) emitDesktop("panel-ready");
+  }, []);
+
   // Refresh every time the shell reveals the popover.
   useEffect(() => {
     let unlisten;

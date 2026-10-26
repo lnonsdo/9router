@@ -6,7 +6,7 @@
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Mutex;
 
-use tauri::{AppHandle, Emitter, Manager, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Listener, Manager, WebviewWindowBuilder};
 
 use crate::consts::{PANEL_LABEL, PANEL_URL, SERVER_PORT};
 use crate::inject::PAGE_INIT_JS;
@@ -24,6 +24,31 @@ const PANEL_GAP: f64 = 6.0;
 const TRAY_TOGGLE_GUARD_MS: i64 = 300;
 
 static TRAY_TOGGLE_AT_MS: AtomicI64 = AtomicI64::new(0);
+static READY_LISTENER: AtomicI64 = AtomicI64::new(0);
+
+/// Listen for "panel-ready" (emitted by the page once React has mounted) and
+/// reveal the popover at that moment — the first thing the user sees is the
+/// styled card with its loading state, never a blank frame. Registered once.
+fn ensure_ready_listener(app: &AppHandle) {
+    if READY_LISTENER.swap(1, Ordering::Relaxed) == 1 {
+        return;
+    }
+    let app2 = app.clone();
+    app.listen("panel-ready", move |_| {
+        if let Some(w) = app2.get_webview_window(PANEL_LABEL) {
+            if w.is_visible().unwrap_or(false) {
+                return; // already revealed (safety timer won the race)
+            }
+            boot_log("panel: page ready - revealing");
+            // The page DOM is mounted by now — safe to inject the init JS.
+            let _ = w.eval(PAGE_INIT_JS);
+            let _ = w.show();
+            let _ = w.set_focus();
+            let _ = app2.emit_to(PANEL_LABEL, "panel-shown", ());
+            emit_state(&app2);
+        }
+    });
+}
 
 /// Last known tray icon rect, stashed from every tray event (clicks, hover).
 /// The right-click menu path has no rect in its event, so the menu-item
@@ -211,9 +236,11 @@ pub(crate) fn toggle_panel(app: &AppHandle, icon_rect: Option<tauri::Rect>) {
         return;
     }
 
-    // First open: create the window hidden, wait for the local server,
-    // navigate, inject the init script, then reveal — so the popover never
-    // flashes a blank frame.
+    // First open: create the window hidden, wait for the local server, then
+    // point it at the panel page. The page emits "panel-ready" once React has
+    // mounted — that is when we reveal (see ensure_ready_listener), with a
+    // safety timer that reveals the placeholder after 5s if the signal never
+    // lands. Visible-with-loading-state beats an invisible window.
     let mut builder =
         WebviewWindowBuilder::new(app, PANEL_LABEL, tauri::WebviewUrl::App("index.html".into()))
             .title("9Router Usage")
@@ -241,25 +268,54 @@ pub(crate) fn toggle_panel(app: &AppHandle, icon_rect: Option<tauri::Rect>) {
         return;
     }
     boot_log("panel: window created, waiting for server");
+    ensure_ready_listener(app);
 
     let app2 = app.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        if std::net::TcpStream::connect(format!("127.0.0.1:{SERVER_PORT}")).is_ok() {
+        // Wait for the local server (up to 10s).
+        let mut up = false;
+        for _ in 0..100 {
+            if std::net::TcpStream::connect(format!("127.0.0.1:{SERVER_PORT}")).is_ok() {
+                up = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        if up {
             if let Some(w) = app2.get_webview_window(PANEL_LABEL) {
                 if let Ok(url) = PANEL_URL.parse() {
                     let _ = w.navigate(url);
                 }
-                std::thread::sleep(std::time::Duration::from_millis(2000));
-                let _ = w.eval(PAGE_INIT_JS);
+            }
+        } else {
+            boot_log("panel: server not reachable - will show placeholder");
+        }
+        // Safety net: reveal whatever the webview has after 5s even if the
+        // ready signal never arrived (page failed to load, server down).
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        if let Some(w) = app2.get_webview_window(PANEL_LABEL) {
+            if !w.is_visible().unwrap_or(true) {
+                boot_log("panel: ready timeout - revealing placeholder");
                 let _ = w.show();
                 let _ = w.set_focus();
                 let _ = app2.emit_to(PANEL_LABEL, "panel-shown", ());
                 emit_state(&app2);
-                boot_log("panel: shown");
             }
-        } else {
-            boot_log("panel: server not reachable, panel stays hidden");
+        }
+        // Server was down at open time: keep retrying the navigation in the
+        // background so the panel upgrades itself once the server is up.
+        if !up {
+            for _ in 0..600 {
+                if std::net::TcpStream::connect(format!("127.0.0.1:{SERVER_PORT}")).is_ok() {
+                    if let Some(w) = app2.get_webview_window(PANEL_LABEL) {
+                        if let Ok(url) = PANEL_URL.parse() {
+                            let _ = w.navigate(url);
+                        }
+                    }
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
         }
     });
 }
