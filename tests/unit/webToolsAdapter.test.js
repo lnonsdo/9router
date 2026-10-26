@@ -174,14 +174,20 @@ describe("planServerToolEmulation — native only when the tool survives the pip
     expect(planServerToolEmulation(planArgs({ targetFormat: "claude", provider: "ark-ap-provider" }))).not.toBeNull();
   });
 
-  it("emulates for Open Design and the Ark coding-plan endpoint (probed unsupported / gated)", () => {
+  it("steps aside on the Ark coding-plan endpoint for web_search; Open Design still emulates", () => {
+    // Both Ark endpoints document native web search on the Messages API. The
+    // coding plan needs 豆包搜索 Custom activated first — until then the call
+    // answers 403 "Access denied for web search …", which is an account state,
+    // not a protocol limitation.
     // open-design: HTTP 400 "unsupported Responses tool type … on Chat route".
-    // volcengine-ark coding plan: type understood but the account is not
-    // entitled (403), and a hard 403 would not fail over to emulation.
     const searchOnly = { ...baseBody, tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }] };
-    for (const provider of ["open-design", "volcengine-ark"]) {
-      const plan = planServerToolEmulation(planArgs({ body: searchOnly, targetFormat: "claude", provider }));
-      expect(plan, provider).not.toBeNull();
+    expect(planServerToolEmulation(planArgs({ body: searchOnly, targetFormat: "claude", provider: "volcengine-ark" }))).toBeNull();
+    expect(planServerToolEmulation(planArgs({ body: searchOnly, targetFormat: "claude", provider: "open-design" }))).not.toBeNull();
+
+    // web_fetch is not offered by either Ark endpoint → emulates.
+    const fetchOnly = { ...baseBody, tools: [{ type: "web_fetch_20250910", name: "web_fetch" }] };
+    for (const provider of ["volcengine-ark", "ark-ap-provider"]) {
+      expect(planServerToolEmulation(planArgs({ body: fetchOnly, targetFormat: "claude", provider })), provider).not.toBeNull();
     }
   });
 

@@ -115,16 +115,22 @@ Claude-compatible endpoints get the tools emulated in the gateway instead of sil
     |---|---|---|
     | `anthropic` | native | native |
     | `ark-ap-provider` (Agent Plan, `/api/plan/v1/messages`) | **native** — `server_tool_use` + `web_search_tool_result`; also `web_search_20260209` | HTTP 400 `unsupported server tool web_fetch` |
-    | `volcengine-ark` (coding plan) | HTTP 403 `Access denied for web search … verify the activation status` (type understood, account not entitled) | untested |
-    | `open-design` (`/v1/messages`, all Claude ids) | HTTP 400 `unsupported Responses tool type "web_search" … on Chat route` | HTTP 400, same |
+    | `volcengine-ark` (coding plan, `/api/coding/v1/messages`) | **native per docs**, but the account must activate 豆包搜索 Custom 版 (控制台 > 开通管理 > 应用组件库 > 豆包搜索); unactivated accounts get HTTP 403 `Access denied for web search … verify the activation status` | not offered |
+    | `open-design` (`/v1/messages`, all Claude ids) | HTTP 400 `unsupported Responses tool type "web_search" … on Chat route` (also with `anthropic-beta: web-search-2025-03-05`, and on `/v1/responses` with the hosted tool) | HTTP 400, same |
 
-    Recorded in the registry: `ark-ap-provider` gains
+    Doc reference for the coding plan:
+    `console.volcengine.com/ark/region:cn-beijing/docs/coding-plan-personal-ai-claude-code.md`
+    §"使用 Claude Code 的 Web Search 功能" — "通过 Messages API 接入的 Claude Code 也可原生使用 Web Search 功能".
+
+    Both Ark providers declare
     `quirks.claudeSupportedToolTypes: ["web_search_20250305", "web_search_20260209"]`
-    (top-level `transport`, which is what `providers/index.js` publishes); `web_fetch`
-    stays out so it keeps emulating, and a request asking for both emulates the whole set.
-    The other two carry comments explaining why they must not be whitelisted — the coding-plan
-    403 is an entitlement gate that would surface as a hard error rather than fall back to
-    emulation, and open-design normalizes every request onto its internal Chat route.
+    on their **top-level `transport`** (that is what `providers/index.js` publishes; a quirk on a
+    `transports[]` entry is invisible to `prepareClaudeRequest`). `web_fetch` stays out because
+    neither endpoint offers it, so fetch keeps emulating and a request asking for both emulates
+    the whole set. Open Design carries a comment explaining why it must not be whitelisted: it
+    normalizes every request onto its internal Chat route.
+    Consequence for the coding plan: an account without 豆包搜索 Custom activated sees the
+    provider's own 403 for `web_search` requests instead of falling back to emulation.
 - `open-sse/services/serverToolEmulator.js` — detection, history downgrade, tool injection,
   the emulation loop and the client-facing SSE synthesizer:
   - Emulated rounds run upstream **non-streaming** (the loop buffers complete rounds), then the
