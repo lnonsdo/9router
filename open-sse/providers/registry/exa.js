@@ -46,5 +46,9 @@ export default {
     ],
     maxCharacters: 100000,
     timeoutMs: 15000
+  },
+  features: {
+    usage: true,
+    usageApikey: true,
   }
 };

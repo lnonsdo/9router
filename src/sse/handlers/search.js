@@ -7,7 +7,7 @@ import {
 } from "../services/auth.js";
 import { getSettings, getCombos } from "@/lib/localDb";
 import { AI_PROVIDERS, resolveProviderId } from "@/shared/constants/providers.js";
-import { handleSearchCore } from "open-sse/handlers/search/index.js";
+import { handleSearchCore } from "open-sse/services/webToolUsage.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import * as log from "../utils/logger.js";
@@ -143,6 +143,7 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
       provider: resolvedProvider,
       providerConfig,
       credentials: null,
+      clientApiKey: apiKey,
       log
     });
     if (result.success) return result.response;
@@ -206,6 +207,7 @@ async function handleSingleProviderSearch(body, providerInput, request, apiKey, 
       provider: resolvedProvider,
       providerConfig,
       credentials: refreshedCredentials,
+      clientApiKey: apiKey,
       log,
       onCredentialsRefreshed: async (newCreds) => {
         await updateProviderCredentials(credentials.connectionId, {

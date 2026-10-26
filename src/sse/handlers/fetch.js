@@ -7,7 +7,7 @@ import {
 } from "../services/auth.js";
 import { getSettings, getCombos } from "@/lib/localDb";
 import { AI_PROVIDERS, resolveProviderId } from "@/shared/constants/providers.js";
-import { handleFetchCore } from "open-sse/handlers/fetch/index.js";
+import { handleFetchCore } from "open-sse/services/webToolUsage.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import * as log from "../utils/logger.js";
@@ -150,6 +150,7 @@ async function handleSingleProviderFetch(body, providerInput, request, apiKey, s
       provider: resolvedProvider.id,
       providerConfig,
       credentials: null,
+      clientApiKey: apiKey,
       log
     });
     if (result.success) {
@@ -199,6 +200,7 @@ async function handleSingleProviderFetch(body, providerInput, request, apiKey, s
       provider: resolvedProvider.id,
       providerConfig,
       credentials: refreshedCredentials,
+      clientApiKey: apiKey,
       log,
       onCredentialsRefreshed: async (newCreds) => {
         await updateProviderCredentials(credentials.connectionId, {

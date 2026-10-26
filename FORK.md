@@ -312,6 +312,44 @@ most likely source of merge conflicts in `capabilities.js` and `providers/regist
 - `refactor: simplify usage stats, add new models and unclassified support` (`9c7148c1`) — model
   additions alongside the usage rework above.
 
+### 📈 Web-tool usage in the Quota Tracker
+`/v1/search` and `/v1/web/fetch` now write one usage row per successful call, and Exa/Tavily
+appear as cards on `/dashboard/quota`.
+
+- Every successful call records `usageHistory` with `model: "web-search" | "web-fetch"` and
+  `endpoint: /v1/search | /v1/web/fetch`, via the `open-sse/services/webToolUsage.js` wrapper
+  (the SSE handlers import it in place of the upstream core; the upstream cores only gained a
+  `provider_cost_usd` field). `saveRequestUsage` keeps an explicitly supplied `cost` (web tools
+  bill per request and have no `pricing.js` entry); `getProviderSpend` (fork repo file) sums a
+  connection's recorded cost over a window.
+- **Tavily** — `GET https://api.tavily.com/usage` with the normal `tvly-` key. Shows the plan
+  bucket, the per-key bucket, and pay-as-you-go when capped. `null` limits become
+  `unlimited: true`; the endpoint exposes no cycle end, so `resetAt` stays null.
+- **Exa** — no per-key quota endpoint is reachable with a normal key: Team Management needs a
+  service key and per-team enablement (`hasServiceApiKeys: false` on a free team), and the
+  dashboard's `/api/get-credits` sits behind Vercel's bot challenge
+  (`x-vercel-mitigated: challenge`). Two sources, in priority order:
+  - *Desktop sync (Tauri only)* — the cloud icon on the Exa card opens
+    `https://dashboard.exa.ai/billing` in a child webview. An injected script reads
+    `/api/get-credits` + `/api/usage-traffic/volume` from that real browser context (the only
+    readable path), emits the JSON as a Tauri event, and Rust writes it to
+    `<DATA_DIR>/exa-sync/<connectionId>.json`. The handler then shows the real credit balance
+    plus a 30d request count. The page may only emit that one event
+    (`src-tauri/capabilities/exa-connect.json`); custom commands stay ACL-blocked, same as the
+    existing `hide-to-tray` pattern.
+    Multi-account safe: one webview per connection, and the script compares
+    `/api/api-keys[].bearerPrefix` with the connection's key prefix (served by
+    `/api/providers/{id}/exa-key-hint`). A mismatched account shows an in-page banner and is
+    rejected again server-side by `snapshotMatchesConnection`, so one account's team-level
+    balance can never land on another account's card. The card names the team the snapshot
+    came from.
+  - *Local estimate (fallback)* — sums this month's locally recorded `costDollars.total`
+    against the $10 monthly free grant; `providerSpecificData.exaMonthlyBudgetUsd` overrides
+    the ceiling. Labelled "Exa (estimated)" and says explicitly that MCP/dashboard traffic is
+    not visible.
+- Web-tool calls also show up in `/dashboard/usage` under the `web-search` / `web-fetch` models
+  and the `/v1/search` / `/v1/web/fetch` endpoints.
+
 ### 🏗️ Build / infra
 - `chore: bump v0.5.40 and add upstream sync script` (`d8cad106`)
 - `build: bump to v0.5.50, update next and slim build` (`aee5465a`) — slimmer standalone build,
@@ -348,9 +386,13 @@ git merge upstream/master   # or rebase; resolve conflicts mostly in src/
 
 Everything else is in **fork-only files** (new paths upstream does not have), which never
 conflict: `open-sse/services/serverToolEmulator.js`, `open-sse/services/webToolsResponse.js`,
+`open-sse/services/webToolUsage.js`, `open-sse/services/webToolQuota.js`,
+`open-sse/services/usage/exa.js`, `open-sse/services/usage/tavily.js`,
+`src/lib/db/repos/webToolUsageRepo.js`, `src-tauri/` (desktop shell, incl.
+`capabilities/exa-connect.json`), `src/app/api/providers/[id]/exa-key-hint/route.js`,
 `src/sse/services/webToolsBridge.js`, `src/shared/components/WebToolsAdapterSection.js`,
-`tests/unit/webTools*.test.js`, `FORK.md`, and the fork-only providers
-(`open-design.js`, `ark-ap-provider.js`).
+`tests/unit/webTools*.test.js`, `tests/unit/provider-spend-db.test.js`, `FORK.md`, and the
+fork-only providers (`open-design.js`, `ark-ap-provider.js`).
 
 The edits to **upstream files** are intentionally small and self-contained — if a merge
 conflicts, these are the only anchors to re-apply:
@@ -358,6 +400,14 @@ conflicts, these are the only anchors to re-apply:
 | Upstream file | Footprint | Anchor |
 |---|---|---|
 | `open-sse/handlers/chatCore.js` | ~80 lines | `handleChatCore` signature (`webToolsAdapter`, `executeServerTool` params); plan block right after the modality prefetch; `injectEmulatedTools` right after `dedupeTools`; the `if (emuPlan)` branch right after `sharedCtx`; the web-tool access-error fallback inside `if (!providerResponse.ok)` |
+| `open-sse/handlers/search/index.js` | 4 lines | `provider_cost_usd` (from `costDollars.total`) added to the `usage` envelope — nothing else; recording lives in the fork wrapper |
+| `open-sse/handlers/fetch/index.js` | ~10 lines | `providerCostUsd` param in `buildData`; Exa passes `json.costDollars.total` |
+| `src/lib/db/repos/usageRepo.js` | 2 lines | `saveRequestUsage` keeps an explicitly supplied `cost` instead of always recalculating it |
+| `src/sse/handlers/search.js`, `src/sse/handlers/fetch.js` | ~4 lines each | import `handleSearchCore` / `handleFetchCore` from `open-sse/services/webToolUsage.js` (fork wrapper) and pass `clientApiKey: apiKey` |
+| `src/app/api/usage/[connectionId]/route.js` | 1 line | import `getUsageForProvider` from `open-sse/services/webToolQuota.js` (fork dispatcher wrapping the upstream map) |
+| `open-sse/providers/registry/exa.js`, `tavily.js` | 4 lines each | `features: { usage: true, usageApikey: true }` |
+| `.../ProviderLimits/utils.js` | 4 lines | `parseQuotaData` generic branch also forwards `unit`, `unlimited`, `isCreditBalance`, `currency` |
+| `.../ProviderLimits/index.js` | ~35 lines | `isTauri` state; `handleExaSync` (emits `open-exa-connect`); `exa-sync-done` listener that refreshes the card; one cloud icon button next to "Refresh quota" |
 | `open-sse/handlers/chatCore/nonStreamingHandler.js` | ~25 lines | `pivotToClientWire()` export + the single call right after `translateNonStreamingResponse()`; the `isResponsesResponse` check also accepts an `output` array |
 | `src/sse/handlers/chat.js` | ~10 lines | import + `webToolsAdapter`/`executeServerTool` params in the `handleChatCore({…})` call; `filterWebToolsAdapterForKey(await getKeyAccessContext(request), …)` around the adapter config |
 | `src/sse/services/keyAccess.js` | ~30 lines | `filterWebToolsAdapterForKey` right before `filterModelsListForKey` |

@@ -180,6 +180,9 @@ export default function ProviderLimits() {
   const [showEditModal, setShowEditModal] = useState(false);
   const [selectedConnection, setSelectedConnection] = useState(null);
   const [proxyPools, setProxyPools] = useState([]);
+  // Exa's dashboard APIs are only reachable from a real browser context, so the
+  // sync button only exists in the Tauri shell (window.__TAURI_INTERNALS__).
+  const [isTauri, setIsTauri] = useState(false);
   // Initialize providerFilter from URL ?provider= param so the page
   // can be bookmarked / deep-linked to a specific provider (#4217).
   const [providerFilter, _setProviderFilter] = useState(
@@ -356,6 +359,22 @@ export default function ProviderLimits() {
     [fetchQuota],
   );
 
+  // Desktop-only: open dashboard.exa.ai in a real browser context so its
+  // usage APIs are readable, then import the balance (see src-tauri/main.rs).
+  // The key prefix lets the injected script verify the logged-in Exa account
+  // actually owns this connection's API key — credits are team-level, so a
+  // shared browser session must not leak one account's balance onto another.
+  const handleExaSync = useCallback(async (connectionId) => {
+    try {
+      const hintRes = await fetch(`/api/providers/${connectionId}/exa-key-hint`, { cache: "no-store" });
+      const hint = hintRes.ok ? await hintRes.json().catch(() => null) : null;
+      const { emit } = await import("@tauri-apps/api/event");
+      await emit("open-exa-connect", { connectionId, keyPrefix: hint?.prefix || null });
+    } catch (error) {
+      console.warn("[ProviderLimits] Exa sync requires the desktop app:", error);
+    }
+  }, []);
+
   const handleResetCodexLimit = useCallback(
     async (connectionId, provider) => {
       if ((provider !== "codex" && provider !== "claude") || resettingLimitId) return;
@@ -514,6 +533,10 @@ export default function ProviderLimits() {
   );
 
   useEffect(() => {
+    setIsTauri(typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__));
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     fetch("/api/proxy-pools?isActive=true", { cache: "no-store" })
       .then((res) => res.json())
@@ -570,6 +593,32 @@ export default function ProviderLimits() {
       setRefreshingAll(false);
     }
   }, [refreshingAll, fetchConnections, fetchQuota, page]);
+
+  // Refresh the Exa card once the desktop sync window has written its snapshot.
+  useEffect(() => {
+    if (!isTauri) return undefined;
+    let unlisten;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        unlisten = await listen("exa-sync-done", (event) => {
+          const connectionId = event?.payload?.connectionId;
+          if (connectionId) refreshProvider(connectionId, "exa");
+          else refreshAll(true);
+        });
+      } catch (error) {
+        console.warn("[ProviderLimits] Exa sync listener unavailable:", error);
+      }
+      if (cancelled && unlisten) unlisten();
+    })();
+
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, [isTauri, refreshProvider, refreshAll]);
 
   useEffect(() => {
     const initializeData = async () => {
@@ -1296,6 +1345,21 @@ export default function ProviderLimits() {
                         </Tooltip>
                       );
                     })()}
+                    {isTauri && conn.provider === "exa" && (
+                      <Tooltip text="Sync balance from the Exa dashboard">
+                        <button
+                          type="button"
+                          onClick={() => handleExaSync(conn.id)}
+                          disabled={rowBusy}
+                          aria-label="Sync Exa balance"
+                          className="flex h-8 w-8 items-center justify-center rounded-lg hover:bg-black/5 dark:hover:bg-white/5 text-text-muted hover:text-primary transition-colors disabled:opacity-50"
+                        >
+                          <span className="material-symbols-outlined text-[18px]">
+                            cloud_sync
+                          </span>
+                        </button>
+                      </Tooltip>
+                    )}
                     <Tooltip text="Refresh quota">
                       <button
                         type="button"
@@ -1377,7 +1441,7 @@ export default function ProviderLimits() {
                     </span>
                     <p className="mt-1.5 text-xs text-text-muted">{error}</p>
                   </div>
-                ) : quota?.message ? (
+                ) : quota?.message && visibleQuotas.length === 0 ? (
                   <div className="text-center py-5">
                     <p className="text-xs text-text-muted">{quota.message}</p>
                   </div>

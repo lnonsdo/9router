@@ -245,7 +245,9 @@ export async function saveRequestUsage(entry) {
     const db = await getAdapter();
 
     if (!entry.timestamp) entry.timestamp = new Date().toISOString();
-    entry.cost = await calculateCost(entry.provider, entry.model, entry.tokens);
+    // Callers may pass a billed amount directly (web tools bill per request,
+    // not per token) — see src/lib/db/repos/webToolUsageRepo.js.
+    entry.cost = Number.isFinite(entry.cost) ? entry.cost : await calculateCost(entry.provider, entry.model, entry.tokens);
 
     const tokens = entry.tokens || {};
     const promptTokens = tokens.prompt_tokens || tokens.input_tokens || 0;

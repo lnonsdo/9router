@@ -56,14 +56,17 @@ function parseJinaTitle(text) {
   return m ? m[1].trim() : null;
 }
 
-function buildData({ provider, url, title, format, text, links, costUsd, responseMs, upstreamMs }) {
+function buildData({ provider, url, title, format, text, links, costUsd, providerCostUsd, responseMs, upstreamMs }) {
   const data = {
     provider,
     url,
     title: title || null,
     content: { format, text: text || "", length: (text || "").length },
     metadata: { author: null, published_at: null, language: null },
-    usage: { fetch_cost_usd: costUsd ?? null },
+    usage: {
+      fetch_cost_usd: costUsd ?? null,
+      ...(Number.isFinite(providerCostUsd) ? { provider_cost_usd: providerCostUsd } : {}),
+    },
     metrics: { response_time_ms: responseMs, upstream_latency_ms: upstreamMs }
   };
   if (Array.isArray(links)) data.links = links;
@@ -277,11 +280,13 @@ async function runExa({ url, fmt, timeoutMs, apiKey, maxCharacters, costPerQuery
   }
   const first = json?.results?.[0] || {};
   const text = truncate(first.text || "", maxCharacters);
+  const billedCostUsd = Number.isFinite(json?.costDollars?.total) ? json.costDollars.total : null;
   return {
     success: true,
     data: buildData({
       provider: "exa", url, title: first.title || null, format: fmt, text,
-      costUsd: costPerQuery, responseMs: Date.now() - startedAt, upstreamMs
+      costUsd: costPerQuery, providerCostUsd: billedCostUsd,
+      responseMs: Date.now() - startedAt, upstreamMs
     })
   };
 }

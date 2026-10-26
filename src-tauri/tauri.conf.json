@@ -29,7 +29,7 @@
     ],
     "security": {
       "csp": null,
-      "capabilities": ["default"]
+      "capabilities": ["default", "exa-connect"]
     }
   },
   "bundle": {

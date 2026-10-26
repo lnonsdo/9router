@@ -98,6 +98,280 @@ const PAGE_INIT_JS: &str = r#"
 })();
 "#;
 
+/// Injected into the Exa dashboard window opened by the quota page's
+/// "Sync Exa" button.
+///
+/// dashboard.exa.ai sits behind Vercel's bot challenge, so only a real browser
+/// context can read its usage APIs. This script runs inside that context, calls
+/// the same endpoints the dashboard itself calls, and hands the JSON back over
+/// the Tauri event channel. Events (not custom commands) because remote pages
+/// are blocked by the ACL — the same reason `hide-to-tray` uses an event.
+const EXA_SYNC_JS_TEMPLATE: &str = r#"
+(function () {
+  if (location.hostname !== "dashboard.exa.ai") return;
+  if (window.__9r_exa_sync) return;
+  window.__9r_exa_sync = true;
+
+  var CONNECTION_ID = "__CONNECTION_ID__";
+  var EXPECTED_PREFIX = "__KEY_PREFIX__";
+  var sent = false;
+  var banner = null;
+
+  // The volume/keys endpoints take undocumented params (teamId + date range),
+  // and the volume call may be a POST with a JSON body. Record the dashboard's
+  // own request (url + method + body) and replay it first, instead of guessing.
+  var seen = { volume: null, keys: null };
+  (function () {
+    function pickHeaders(headers) {
+      if (!headers) return null;
+      var picked = {};
+      try {
+        if (typeof Headers !== "undefined" && headers instanceof Headers) {
+          headers.forEach(function (value, name) {
+            var key = name.toLowerCase();
+            if (key === "content-type" || key.indexOf("x-") === 0) picked[key] = value;
+          });
+        } else {
+          Object.keys(headers).forEach(function (name) {
+            var key = name.toLowerCase();
+            if (key === "content-type" || key.indexOf("x-") === 0) picked[key] = headers[name];
+          });
+        }
+      } catch (e) { return null; }
+      return Object.keys(picked).length ? picked : null;
+    }
+
+    var origFetch = window.fetch;
+    window.fetch = function (input, init) {
+      try {
+        var url = (typeof input === "string" ? input : (input && input.url)) || "";
+        var method = (init && init.method) || (input && input.method) || "GET";
+        var body = init && typeof init.body === "string" ? init.body : null;
+        var req = { url: url, method: method, body: body, headers: pickHeaders(init && init.headers) };
+        if (url.indexOf("usage-traffic") !== -1) seen.volume = req;
+        else if (url.indexOf("api-keys") !== -1) seen.keys = req;
+      } catch (e) {}
+      return origFetch.apply(this, arguments);
+    };
+  })();
+
+  // Debug trail of every request this sync attempted (url/method/status), kept
+  // in the snapshot so a failing endpoint can be diagnosed without a DevTools
+  // session inside the app's webview.
+  var attempts = [];
+
+  function requestJSON(req) {
+    if (!req || !req.url) return Promise.resolve(null);
+    var headers = { accept: "application/json" };
+    if (req.headers) {
+      Object.keys(req.headers).forEach(function (k) { headers[k] = req.headers[k]; });
+    }
+    var opts = {
+      method: req.method || "GET",
+      credentials: "include",
+      headers: headers
+    };
+    if (req.body != null) {
+      if (!headers["content-type"]) headers["content-type"] = "application/json";
+      opts.body = req.body;
+    }
+    return fetch(req.url, opts)
+      .then(function (r) {
+        attempts.push({ url: req.url, method: opts.method, status: r.status });
+        return r.ok ? r.json() : null;
+      })
+      .catch(function () {
+        attempts.push({ url: req.url, method: opts.method, status: "error" });
+        return null;
+      });
+  }
+
+  function getJSON(url) {
+    return requestJSON({ url: url, method: "GET" });
+  }
+
+  function isKeys(json) {
+    return !!json && typeof json === "object" && Array.isArray(json.apiKeys);
+  }
+
+  function isVolume(json) {
+    return !!json && typeof json === "object" &&
+      (Array.isArray(json.rows) || Array.isArray(json.data) || typeof json.total === "number");
+  }
+
+  function firstValid(candidates, accept) {
+    var i = 0;
+    function next() {
+      if (i >= candidates.length) return Promise.resolve(null);
+      var req = candidates[i++];
+      if (!req) return next();
+      return requestJSON(req).then(function (json) {
+        return accept(json) ? json : next();
+      });
+    }
+    return next();
+  }
+
+  // Verified against the live dashboard (2026-10):
+  //   GET  /api/get-api-keys              -> { apiKeys: [...] }   (/api/api-keys is 404)
+  //   POST /api/usage-traffic/volume      -> { window, groupBy, rows }
+  //        body: { startDate, endDate, groupBy: "endpoint" }      (GET is 405; teamId is rejected)
+  // Replay the dashboard's own captured request first, then fall back to the
+  // contract above.
+  function getKeys() {
+    return firstValid([
+      seen.keys,
+      { url: "/api/get-api-keys", method: "GET" }
+    ], isKeys);
+  }
+
+  function getVolume() {
+    var now = new Date();
+    var day = function (d) { return d.toISOString().slice(0, 10); };
+    // 30-day window inclusive, matching the dashboard's default range.
+    var startDate = day(new Date(now.getTime() - 29 * 24 * 3600 * 1000));
+    var endDate = day(now);
+
+    return firstValid([
+      seen.volume,
+      {
+        url: "/api/usage-traffic/volume",
+        method: "POST",
+        body: JSON.stringify({ startDate: startDate, endDate: endDate, groupBy: "endpoint" })
+      }
+    ], isVolume);
+  }
+
+  function showBanner(text) {
+    if (banner) { banner.textContent = text; return; }
+    banner = document.createElement("div");
+    banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:2147483647;padding:10px 16px;background:#7c2d12;color:#fff;font:13px/1.5 -apple-system,BlinkMacSystemFont,sans-serif;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,.3)";
+    banner.textContent = text;
+    document.documentElement.appendChild(banner);
+  }
+
+  function clearBanner() {
+    if (banner && banner.parentNode) banner.parentNode.removeChild(banner);
+    banner = null;
+  }
+
+  function tick() {
+    if (sent) return;
+    getJSON("/api/get-credits").then(function (credits) {
+      // Not logged in yet — the login page also answers, just without credits.
+      if (!credits || typeof credits.orbCreditsInCents !== "number") return;
+
+      getJSON("/api/team-context").then(function (teamContext) {
+        attempts = [];
+        Promise.all([getKeys(), getVolume()]).then(function (results) {
+          var keys = results[0];
+          var volume = results[1];
+
+          // Exa credits are team-level, so the logged-in account must own the
+          // key behind this connection — otherwise the balance is someone else's.
+          if (EXPECTED_PREFIX && isKeys(keys)) {
+            var owns = keys.apiKeys.some(function (k) {
+              return k && k.bearerPrefix === EXPECTED_PREFIX;
+            });
+            if (!owns) {
+              showBanner("当前登录的 Exa 账户不拥有这个连接使用的 API Key。请在此页面切换到对应账户，检测到匹配后会自动完成同步。");
+              return;
+            }
+          }
+          clearBanner();
+          sent = true;
+
+          return window.__TAURI_INTERNALS__.invoke("plugin:event|emit", {
+            event: "exa-sync-result",
+            payload: {
+              connectionId: CONNECTION_ID,
+              credits: credits,
+              volume: volume || null,
+              teamContext: teamContext || null,
+              apiKeys: keys || null,
+              debug: attempts.slice(0, 40),
+              syncedAt: new Date().toISOString()
+            }
+          });
+        }).catch(function () { sent = false; });
+      });
+    });
+  }
+
+  setTimeout(tick, 600);
+  setInterval(tick, 3000);
+})();
+"#;
+
+const EXA_SYNC_DIR: &str = "exa-sync";
+
+/// The focused webview window, if any. Used by the Window menu so Cmd+W /
+/// Cmd+M act on the Exa sync window when it is in front, not the dashboard.
+fn focused_webview_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
+    app.webview_windows()
+        .into_values()
+        .find(|w| w.is_focused().unwrap_or(false))
+}
+
+/// Connection ids are UUIDs; strip anything else before using one as a filename.
+fn sanitize_connection_id(id: &str) -> String {
+    id.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect()
+}
+
+/// Open (or focus) the Exa dashboard window used by the sync button.
+///
+/// One window per connection: two Exa accounts can be synced side by side, and
+/// each window's injected script carries its own expected key prefix.
+fn open_exa_connect(app: &AppHandle, connection_id: &str, key_prefix: Option<&str>) {
+    let conn = sanitize_connection_id(connection_id);
+    if conn.is_empty() {
+        boot_log("open_exa_connect: invalid connection id");
+        return;
+    }
+
+    let label = format!("exa-connect-{conn}");
+    if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.show();
+        let _ = w.set_focus();
+        return;
+    }
+
+    let prefix: String = key_prefix
+        .unwrap_or("")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    let script = EXA_SYNC_JS_TEMPLATE
+        .replace("__CONNECTION_ID__", &conn)
+        .replace("__KEY_PREFIX__", &prefix);
+    let script_for_load = script.clone();
+    let url: tauri::Url = match "https://dashboard.exa.ai/billing".parse() {
+        Ok(u) => u,
+        Err(_) => return,
+    };
+
+    match WebviewWindowBuilder::new(app, &label, tauri::WebviewUrl::External(url))
+        .title("Exa — 同步账户用量")
+        .inner_size(1100.0, 820.0)
+        .min_inner_size(800.0, 600.0)
+        .center()
+        .initialization_script(&script)
+        // WKWebView does not reliably re-run js_init_script across cross-origin
+        // navigations (login → dashboard), so eval it again on every page load.
+        .on_page_load(move |webview, payload| {
+            if payload.url().host_str() == Some("dashboard.exa.ai") {
+                let _ = webview.eval(script_for_load.as_str());
+            }
+        })
+        .build()
+    {
+        Ok(_) => boot_log(&format!("open_exa_connect: window opened for {conn}")),
+        Err(e) => boot_log(&format!("open_exa_connect: build failed: {e}")),
+    }
+}
+
 /// Append a line to ~/.9router/tauri-boot.log. Used to diagnose launch issues
 /// (e.g. white screen when the .app is moved to /Applications) where the GUI
 /// process's stdout/stderr is discarded and we can't see the server state.
@@ -669,10 +943,86 @@ fn main() {
                 }
             });
 
+            // Quota page "Sync Exa" button → open the dashboard webview. The
+            // injected script reads the account's credits/volume from inside
+            // that real browser context (the only place they are readable).
+            let handle_for_exa_open = handle.clone();
+            handle.listen("open-exa-connect", move |event| {
+                let payload = serde_json::from_str::<serde_json::Value>(event.payload()).ok();
+                let connection_id = payload
+                    .as_ref()
+                    .and_then(|v| v.get("connectionId"))
+                    .and_then(|c| c.as_str())
+                    .map(str::to_string);
+                let key_prefix = payload
+                    .as_ref()
+                    .and_then(|v| v.get("keyPrefix"))
+                    .and_then(|c| c.as_str())
+                    .map(str::to_string);
+
+                if let Some(id) = connection_id {
+                    let app = handle_for_exa_open.clone();
+                    let _ = handle_for_exa_open
+                        .run_on_main_thread(move || open_exa_connect(&app, &id, key_prefix.as_deref()));
+                } else {
+                    boot_log("open-exa-connect: missing connectionId");
+                }
+            });
+
+            // The Exa webview hands its JSON back over the event channel.
+            // Persist it beside the DB so the quota handler can read it with no
+            // extra API route, then tell the main window to refresh the card.
+            let handle_for_exa_result = handle.clone();
+            handle.listen("exa-sync-result", move |event| {
+                let raw = event.payload().to_string();
+                let parsed: serde_json::Value = match serde_json::from_str(&raw) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        boot_log(&format!("exa-sync-result: bad payload: {e}"));
+                        return;
+                    }
+                };
+                let id = sanitize_connection_id(
+                    parsed.get("connectionId").and_then(|v| v.as_str()).unwrap_or(""),
+                );
+                if id.is_empty() {
+                    boot_log("exa-sync-result: missing connectionId");
+                    return;
+                }
+                if let Ok(home) = std::env::var("HOME") {
+                    let path = PathBuf::from(&home)
+                        .join(".9router")
+                        .join(EXA_SYNC_DIR)
+                        .join(format!("{id}.json"));
+                    if let Some(dir) = path.parent() {
+                        let _ = std::fs::create_dir_all(dir);
+                    }
+                    match std::fs::write(&path, raw.as_bytes()) {
+                        Ok(_) => boot_log(&format!("exa-sync-result: wrote {}", path.display())),
+                        Err(e) => boot_log(&format!("exa-sync-result: write failed: {e}")),
+                    }
+                }
+                if let Some(w) = handle_for_exa_result
+                    .get_webview_window(&format!("exa-connect-{id}"))
+                {
+                    let _ = w.close();
+                }
+                if let Some(main) = handle_for_exa_result.get_webview_window("main") {
+                    let _ = main.emit("exa-sync-done", serde_json::json!({ "connectionId": id }));
+                }
+            });
+
             Ok(())
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Only the main window has the quit/minimize-to-tray dialog.
+                // Child webviews (Exa sync) must close normally, and emitting
+                // "close-requested" from them would broadcast to the main
+                // window and trigger its quit dialog instead.
+                if window.label() != "main" {
+                    return;
+                }
                 // In lightweight mode, let the window close to free memory.
                 if let Some(state) = window.app_handle().try_state::<LightweightMode>() {
                     if state.0.load(std::sync::atomic::Ordering::Relaxed) {
@@ -694,15 +1044,24 @@ fn main() {
                 }
             }
             "minimize" => {
-                if let Some(win) = app.get_webview_window("main") {
+                // Follow focus: Cmd+M on the Exa sync window minimises that
+                // window, not the dashboard behind it.
+                if let Some(win) = focused_webview_window(app) {
+                    let _ = win.minimize();
+                } else if let Some(win) = app.get_webview_window("main") {
                     let _ = win.minimize();
                 }
             }
             "close" => {
                 // Same as clicking the red close button: emit "close-requested"
                 // so the frontend shows the Quit/Minimize-to-tray dialog.
-                if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.emit("close-requested", ());
+                // Child windows (Exa sync) just close normally.
+                if let Some(win) = focused_webview_window(app) {
+                    if win.label() != "main" {
+                        let _ = win.close();
+                    } else {
+                        let _ = win.emit("close-requested", ());
+                    }
                 }
             }
             _ => {}

@@ -14,8 +14,7 @@
 import { getProviderCredentials, markAccountUnavailable } from "./auth.js";
 import { AI_PROVIDERS, resolveProviderId } from "@/shared/constants/providers.js";
 import { assertPublicUrlResolved } from "@/shared/utils/ssrfGuard.js";
-import { handleSearchCore } from "open-sse/handlers/search/index.js";
-import { handleFetchCore } from "open-sse/handlers/fetch/index.js";
+import { handleSearchCore, handleFetchCore } from "open-sse/services/webToolUsage.js";
 import * as log from "../utils/logger.js";
 
 const SEARCH_MAX_RESULTS = 8;

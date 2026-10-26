@@ -115,9 +115,13 @@ async function tryDedicatedProvider({ provider, providerConfig, body, credential
       ? params.offset % 10 : 0;
     const results = normalized.results.slice(pageOffset, pageOffset + params.maxResults);
     const duration = Date.now() - startTime;
+    // Exa reports the billed amount for this call; other providers only expose
+    // a static per-query price from their registry config.
+    const billedCostUsd = Number.isFinite(data?.costDollars?.total) ? data.costDollars.total : null;
     const usage = {
       queries_used: 1,
       search_cost_usd: providerConfig.costPerQuery ?? null,
+      ...(billedCostUsd !== null ? { provider_cost_usd: billedCostUsd } : {}),
     };
     if (Number.isFinite(providerConfig.creditsPerResult)) {
       usage.provider_credits_used = results.length * providerConfig.creditsPerResult;

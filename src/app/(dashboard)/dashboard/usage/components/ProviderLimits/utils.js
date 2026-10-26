@@ -836,6 +836,12 @@ export function parseQuotaData(provider, data) {
               percentageIsUsed: quota.percentageIsUsed === true,
               resetAt: quota.resetAt || null,
               emptyMessage: quota.emptyMessage || null,
+              // Web-tool cards (exa/tavily): money amounts, uncapped buckets and
+              // dashboard-synced credit balances.
+              unit: quota.unit,
+              unlimited: quota.unlimited === true,
+              isCreditBalance: quota.isCreditBalance === true,
+              currency: quota.currency,
             });
           });
         }
