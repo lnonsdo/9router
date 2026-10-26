@@ -467,6 +467,9 @@ export const PROVIDER_CAPABILITIES = {
     "gpt-image-2":          { vision: true, imageOutput: true, tools: false },
   },
 };
+// The table is keyed by provider id, but combo/capacity paths and user model
+// strings still spell this provider with its historical alias.
+PROVIDER_CAPABILITIES.opendesign = PROVIDER_CAPABILITIES["open-design"];
 
 // Qoder model capability table. The model ids are opaque (`dmodel`, `kmodel`,
 // `qmodel_38max`), so the name heuristics in PATTERN_CAPABILITIES match none of

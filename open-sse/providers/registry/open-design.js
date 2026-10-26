@@ -19,7 +19,10 @@
 export default {
   id: "open-design",
   priority: 118,
-  alias: "open-design",
+  // Model namespace stays "opendesign": it is baked into saved combos, API-key
+  // allow lists and CLI configs. The id (open-design) resolves too, so the
+  // official spelling keeps working — only the alias must not move.
+  alias: "opendesign",
   aliases: [
     "od",
   ],
