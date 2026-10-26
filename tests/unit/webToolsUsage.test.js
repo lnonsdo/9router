@@ -31,13 +31,14 @@ import {
   readExaSnapshot,
   summarizeVolume,
   snapshotMatchesConnection,
+  volumeCoversCurrentMonth,
   exaSnapshotDir,
   EXA_FREE_MONTHLY_CREDITS_USD,
 } from "../../open-sse/services/usage/exa.js";
 import { getUsageForProvider } from "../../open-sse/services/webToolQuota.js";
 import { handleSearchCore, handleFetchCore } from "../../open-sse/services/webToolUsage.js";
 import { USAGE_APIKEY_PROVIDERS, USAGE_SUPPORTED_PROVIDERS } from "@/shared/constants/providers.js";
-import { parseQuotaData } from "../../src/app/(dashboard)/dashboard/usage/components/ProviderLimits/utils.js";
+import { getRemainingPercentage, parseQuotaData } from "../../src/app/(dashboard)/dashboard/usage/components/ProviderLimits/utils.js";
 
 const jsonResponse = (body) => new Response(JSON.stringify(body), {
   status: 200,
@@ -155,13 +156,20 @@ describe("Exa usage handler", () => {
 });
 
 describe("Exa dashboard snapshot (desktop sync)", () => {
+  // The sync script asks for the current calendar month; a fixture with a
+  // rolling window would be treated as stale (see volumeCoversCurrentMonth).
+  const currentMonthStart = (() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+  })();
+
   const snapshot = {
     credits: {
       orbCreditsInCents: 1949.1,
       expiringCredits: [{ balanceCents: 949, expiresAt: "2026-11-01T07:00:00+00:00" }],
     },
     volume: {
-      window: { startDate: "2026-09-27", endDate: "2026-10-26" },
+      window: { startDate: currentMonthStart, endDate: new Date().toISOString().slice(0, 10) },
       groupBy: "endpoint",
       rows: [
         { day: "2026-10-07", group: "/search", count: 16 },
@@ -196,17 +204,73 @@ describe("Exa dashboard snapshot (desktop sync)", () => {
       total: 10,
       resetAt: "2026-11-01T07:00:00+00:00",
     });
-    expect(usage.message).toContain("33 requests");
-    expect(usage.message).toContain("Search 29 / Contents 4");
-    expect(usage.message).toMatch(/Sep 27 – Oct 26/);
-    expect(usage.message).toMatch(/Synced from Exa dashboard/);
-    expect(usage.message).toContain("(Phoebe Chibi's Personal)");
+    expect(usage.message).toBe(
+      "Synced from Exa dashboard (Phoebe Chibi's Personal) just now",
+    );
+    // The note deliberately carries no request count or date range: Exa bills
+    // monthly, so a rolling window would mix in the previous cycle's calls. The
+    // count is its own "Requests" quota row instead (asserted below).
+    expect(usage.message).not.toMatch(/requests|Sep 27|Oct 26/);
     expect(usage.meta).toMatchObject({
       requests: 33,
       byEndpoint: { search: 29, contents: 4 },
+      endpointSummary: "Search 29 / Contents 4",
+      // $0.51 spent over 33 requests → $0.0155/request, so the $9.49 left in the
+      // cycle buys roughly 610 more (deliberately rounded to a round number).
+      remainingRequests: 610,
+      staleVolume: false,
       account: { teamId: "team-1", teamName: "Phoebe Chibi's Personal" },
       estimated: false,
     });
+    expect(usage.meta.avgCostUsd).toBeCloseTo(0.015455, 5);
+    // Rendered as a regular quota row so it keeps the table's progress format:
+    // 33 served, capacity 33 + ~610 left → "33 / 640", 95% remaining.
+    expect(usage.quotas.Requests).toMatchObject({
+      used: 33,
+      total: 640,
+      emoji: "📊",
+      resetAt: "2026-11-01T07:00:00+00:00",
+    });
+  });
+
+  it("skips the requests-left estimate until some money has been spent", () => {
+    const fresh = {
+      ...snapshot,
+      credits: {
+        orbCreditsInCents: 1000,
+        expiringCredits: [{ balanceCents: 1000, expiresAt: "2026-11-01T07:00:00+00:00" }],
+      },
+    };
+
+    const usage = buildSyncedUsage(fresh);
+
+    expect(usage.meta.requests).toBe(33);
+    expect(usage.meta.remainingRequests).toBeNull();
+    expect(usage.meta.avgCostUsd).toBeNull();
+    // No money spent yet, so there is no per-request cost to project forward.
+    expect(usage.quotas.Requests).toBeUndefined();
+  });
+
+  it("drops a rolling 30-day window left behind by an older sync", () => {
+    const stale = {
+      ...snapshot,
+      volume: {
+        ...snapshot.volume,
+        window: { startDate: "2026-09-27", endDate: "2026-10-26" },
+      },
+    };
+
+    const usage = buildSyncedUsage(stale);
+
+    // The balance is still valid; only the request count is withheld, because it
+    // would include the previous billing cycle.
+    expect(usage.quotas["Credits balance"].total).toBe(19.49);
+    expect(usage.meta.requests).toBeNull();
+    expect(usage.meta.endpointSummary).toBeNull();
+    expect(usage.meta.staleVolume).toBe(true);
+    expect(volumeCoversCurrentMonth(stale.volume)).toBe(false);
+    expect(volumeCoversCurrentMonth({ window: { startDate: currentMonthStart } })).toBe(true);
+    expect(volumeCoversCurrentMonth({})).toBe(true);
   });
 
   it("accepts a snapshot only for the key it belongs to", () => {
@@ -416,5 +480,17 @@ describe("quota normalization", () => {
     });
 
     expect(rows[0]).toMatchObject({ used: 7, unlimited: true, emptyMessage: "Current billing cycle" });
+  });
+
+  it("forwards a custom row emoji", () => {
+    const rows = parseQuotaData("exa", {
+      quotas: {
+        Requests: { used: 96, total: 1600, emoji: "📊", resetAt: "2026-11-01T00:00:00.000Z" },
+      },
+    });
+
+    expect(rows[0]).toMatchObject({ name: "Requests", used: 96, total: 1600, emoji: "📊" });
+    // 1600 - 96 left of the projected capacity → the table's progress bar.
+    expect(getRemainingPercentage(rows[0])).toBe(94);
   });
 });

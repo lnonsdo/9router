@@ -140,10 +140,31 @@ function capitalize(value) {
   return value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
 }
 
+function dayString(date) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/** Keep a budget estimate honest: no false precision on a number this rough. */
+function roundEstimate(value) {
+  if (!Number.isFinite(value) || value <= 0) return null;
+  if (value >= 1000) return Math.floor(value / 100) * 100;
+  if (value >= 100) return Math.floor(value / 10) * 10;
+  return Math.floor(value);
+}
+
 /**
- * Map a dashboard snapshot to the Quota Tracker shape.
- * Returns null when the snapshot has no usable credits payload.
+ * The request count must cover the current billing month only. Snapshots
+ * written before the sync script asked for a calendar-month window carry a
+ * rolling 30-day range; presenting that as "this month" would fold the previous
+ * cycle's calls back in. Returns true when there is no window to judge.
  */
+export function volumeCoversCurrentMonth(volume, now = new Date()) {
+  const start = volume?.window?.startDate;
+  if (typeof start !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(start)) return true;
+  return start >= dayString(new Date(now.getFullYear(), now.getMonth(), 1));
+}
+
 /**
  * Identify the Exa account a snapshot was taken from.
  * `/api/team-context` carries the team name/plan; `users[]` carries the owner.
@@ -175,7 +196,11 @@ export function snapshotMatchesConnection(snapshot, connection) {
   return keys.some((entry) => entry && entry.bearerPrefix === prefix);
 }
 
-export function buildSyncedUsage(snapshot, { grantUsd = EXA_FREE_MONTHLY_CREDITS_USD } = {}) {
+/**
+ * Map a dashboard snapshot to the Quota Tracker shape.
+ * Returns null when the snapshot has no usable credits payload.
+ */
+export function buildSyncedUsage(snapshot, { grantUsd = EXA_FREE_MONTHLY_CREDITS_USD, now = new Date() } = {}) {
   const credits = snapshot?.credits;
   const balanceCents = Number(credits?.orbCreditsInCents);
   if (!Number.isFinite(balanceCents)) return null;
@@ -205,32 +230,56 @@ export function buildSyncedUsage(snapshot, { grantUsd = EXA_FREE_MONTHLY_CREDITS
     };
   }
 
-  const volume = summarizeVolume(snapshot.volume);
-  const range = snapshot.volume?.window;
-  const rangeLabel = range?.startDate && range?.endDate
-    ? `${shortDate(range.startDate)} – ${shortDate(range.endDate)}`
-    : "30d";
+  const volumeIsCurrentMonth = volumeCoversCurrentMonth(snapshot.volume, now);
+  const volume = volumeIsCurrentMonth ? summarizeVolume(snapshot.volume) : null;
+  const endpointSummary = volume
+    ? Object.entries(volume.byEndpoint)
+        .sort((a, b) => b[1] - a[1])
+        .map(([name, count]) => `${capitalize(name)} ${count}`)
+        .join(" / ")
+    : "";
+
+  // "Requests left" is a money-budget estimate: this month's average cost per
+  // request (grant spent ÷ requests served) applied to the grant still in the
+  // cycle. Search and Contents are priced differently, so treat it as a range.
+  const remainingUsd = expiring ? expiring.totalCents / 100 : 0;
+  const spentUsd = Math.max(0, grantUsd - remainingUsd);
+  const avgCostUsd = volume?.total > 0 && spentUsd > 0 ? spentUsd / volume.total : null;
+  const remainingRequests = avgCostUsd ? roundEstimate(remainingUsd / avgCostUsd) : null;
+
+  // Rendered as a normal quota row so it keeps the table's progress format:
+  // used = calls served this month, total = used + what the money left can buy.
+  if (volume && remainingRequests !== null) {
+    quotas.Requests = {
+      used: volume.total,
+      total: Math.max(volume.total, roundEstimate(volume.total + remainingRequests)),
+      emoji: "📊",
+      resetAt: expiring?.expiresAt || null,
+      emptyMessage: `${avgCostUsd.toFixed(4)}/request avg this month`,
+    };
+  }
+
   const account = resolveSnapshotAccount(snapshot);
   const accountSuffix = account.teamName ? ` (${account.teamName})` : "";
-
-  const notes = [`Synced from Exa dashboard${accountSuffix} ${relativeTime(snapshot.syncedAt)}`];
-  if (volume) {
-    const parts = Object.entries(volume.byEndpoint)
-      .sort((a, b) => b[1] - a[1])
-      .map(([name, count]) => `${capitalize(name)} ${count}`);
-    const suffix = parts.length > 0 ? ` · ${parts.join(" / ")}` : "";
-    notes.push(`${volume.total.toLocaleString()} requests (${rangeLabel}${suffix})`);
-  }
 
   return {
     plan: "Exa",
     quotas,
-    message: notes.join(" · "),
+    // The request count lives in `meta` so the card can show it under the quota
+    // rows; the note stays a one-liner about where the numbers came from.
+    message: `Synced from Exa dashboard${accountSuffix} ${relativeTime(snapshot.syncedAt)}`,
     meta: {
       source: "dashboard-sync",
       syncedAt: snapshot.syncedAt || null,
       requests: volume?.total ?? null,
       byEndpoint: volume?.byEndpoint ?? null,
+      endpointSummary: endpointSummary || null,
+      // Budget-based ballpark for how many more calls fit in this cycle.
+      remainingRequests,
+      avgCostUsd,
+      // Set when a request-count window was dropped for covering the previous
+      // billing month; the card uses it to trigger an immediate re-sync.
+      staleVolume: !volumeIsCurrentMonth,
       account,
       estimated: false,
     },
@@ -269,7 +318,7 @@ export async function getExaUsage(connection) {
   // behind Vercel's bot challenge. Say so instead of implying "$0 used".
   const localNote = spend.requests > 0
     ? `${spend.requests} request${spend.requests === 1 ? "" : "s"} recorded by 9Router this month (estimated from Exa's per-call cost)`
-    : "No Exa calls recorded by 9Router yet. Calls made through Exa's dashboard or the hosted Exa MCP are not visible here. Use the sync button in the desktop app to import the dashboard balance.";
+    : "No Exa calls recorded by 9Router yet. Calls made through Exa's dashboard or the hosted Exa MCP are not visible here. Use the refresh button in the desktop app to import the dashboard balance.";
   const message = mismatchNote ? `${mismatchNote} ${localNote}` : localNote;
 
   return {

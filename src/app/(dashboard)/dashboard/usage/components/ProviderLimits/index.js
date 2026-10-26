@@ -105,6 +105,10 @@ function getCodexResetCreditCount(quota) {
   return Number.isFinite(count) ? Math.max(0, count) : 0;
 }
 
+// Desktop auto-sync: a stale Exa snapshot is refreshed from a hidden webview
+// when the quota page opens. Manual sync still bypasses the throttle.
+const EXA_AUTO_SYNC_MS = 30 * 60 * 1000;
+
 const CLAUDE_RESET_LIMIT_NAMES = {
   five_hour: "session",
   seven_day: "weekly",
@@ -183,6 +187,7 @@ export default function ProviderLimits() {
   // Exa's dashboard APIs are only reachable from a real browser context, so the
   // sync button only exists in the Tauri shell (window.__TAURI_INTERNALS__).
   const [isTauri, setIsTauri] = useState(false);
+  const exaAutoSyncAt = useRef(new Map());
   // Initialize providerFilter from URL ?provider= param so the page
   // can be bookmarked / deep-linked to a specific provider (#4217).
   const [providerFilter, _setProviderFilter] = useState(
@@ -364,12 +369,12 @@ export default function ProviderLimits() {
   // The key prefix lets the injected script verify the logged-in Exa account
   // actually owns this connection's API key — credits are team-level, so a
   // shared browser session must not leak one account's balance onto another.
-  const handleExaSync = useCallback(async (connectionId) => {
+  const handleExaSync = useCallback(async (connectionId, { auto = false } = {}) => {
     try {
       const hintRes = await fetch(`/api/providers/${connectionId}/exa-key-hint`, { cache: "no-store" });
       const hint = hintRes.ok ? await hintRes.json().catch(() => null) : null;
       const { emit } = await import("@tauri-apps/api/event");
-      await emit("open-exa-connect", { connectionId, keyPrefix: hint?.prefix || null });
+      await emit("open-exa-connect", { connectionId, keyPrefix: hint?.prefix || null, auto });
     } catch (error) {
       console.warn("[ProviderLimits] Exa sync requires the desktop app:", error);
     }
@@ -619,6 +624,38 @@ export default function ProviderLimits() {
       if (unlisten) unlisten();
     };
   }, [isTauri, refreshProvider, refreshAll]);
+
+  // Auto-refresh a stale Exa snapshot in a hidden webview when this page loads.
+  // Only in the desktop shell (the dashboard's APIs need a real browser context)
+  // and throttled per connection so the page cannot open a window in a loop.
+  useEffect(() => {
+    if (!isTauri || connections.length === 0) return;
+
+    const now = Date.now();
+    for (const conn of connections) {
+      if (conn.provider !== "exa") continue;
+
+      const entry = quotaData[conn.id];
+      if (!entry) continue; // quota not fetched yet; the next pass will see it
+
+      const meta = entry.raw?.meta || {};
+      const syncedAt = Date.parse(meta.syncedAt || "");
+      // `staleVolume` marks a snapshot whose request-count window predates this
+      // billing month (written before the sync script asked for calendar
+      // months); the count is withheld, so re-sync instead of showing it empty.
+      const fresh = meta.source === "dashboard-sync"
+        && meta.staleVolume !== true
+        && Number.isFinite(syncedAt)
+        && now - syncedAt < EXA_AUTO_SYNC_MS;
+      if (fresh) continue;
+
+      const lastAttempt = exaAutoSyncAt.current.get(conn.id) || 0;
+      if (now - lastAttempt < EXA_AUTO_SYNC_MS) continue;
+
+      exaAutoSyncAt.current.set(conn.id, now);
+      handleExaSync(conn.id, { auto: true });
+    }
+  }, [isTauri, connections, quotaData, handleExaSync]);
 
   useEffect(() => {
     const initializeData = async () => {
@@ -1345,25 +1382,24 @@ export default function ProviderLimits() {
                         </Tooltip>
                       );
                     })()}
-                    {isTauri && conn.provider === "exa" && (
-                      <Tooltip text="Sync balance from the Exa dashboard">
-                        <button
-                          type="button"
-                          onClick={() => handleExaSync(conn.id)}
-                          disabled={rowBusy}
-                          aria-label="Sync Exa balance"
-                          className="flex h-8 w-8 items-center justify-center rounded-lg hover:bg-black/5 dark:hover:bg-white/5 text-text-muted hover:text-primary transition-colors disabled:opacity-50"
-                        >
-                          <span className="material-symbols-outlined text-[18px]">
-                            cloud_sync
-                          </span>
-                        </button>
-                      </Tooltip>
-                    )}
-                    <Tooltip text="Refresh quota">
+                    <Tooltip
+                      text={
+                        isTauri && conn.provider === "exa"
+                          ? "Refresh quota (re-syncs the Exa dashboard balance)"
+                          : "Refresh quota"
+                      }
+                    >
                       <button
                         type="button"
-                        onClick={() => refreshProvider(conn.id, conn.provider)}
+                        onClick={() => {
+                          // Exa's real numbers only move when we re-read the
+                          // dashboard; a plain re-fetch would just replay the
+                          // cached snapshot and look like a no-op.
+                          if (isTauri && conn.provider === "exa") {
+                            handleExaSync(conn.id, { auto: true });
+                          }
+                          refreshProvider(conn.id, conn.provider);
+                        }}
                         disabled={isLoading || rowBusy}
                         aria-label="Refresh quota"
                         className="flex h-8 w-8 items-center justify-center rounded-lg hover:bg-black/5 dark:hover:bg-white/5 transition-colors disabled:opacity-50"

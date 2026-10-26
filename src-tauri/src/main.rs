@@ -114,7 +114,9 @@ const EXA_SYNC_JS_TEMPLATE: &str = r#"
 
   var CONNECTION_ID = "__CONNECTION_ID__";
   var EXPECTED_PREFIX = "__KEY_PREFIX__";
+  var AUTO = "__AUTO__" === "1";
   var sent = false;
+  var tries = 0;
   var banner = null;
 
   // The volume/keys endpoints take undocumented params (teamId + date range),
@@ -227,9 +229,13 @@ const EXA_SYNC_JS_TEMPLATE: &str = r#"
 
   function getVolume() {
     var now = new Date();
-    var day = function (d) { return d.toISOString().slice(0, 10); };
-    // 30-day window inclusive, matching the dashboard's default range.
-    var startDate = day(new Date(now.getTime() - 29 * 24 * 3600 * 1000));
+    var pad = function (n) { return n < 10 ? "0" + n : "" + n; };
+    // Local calendar month: Exa bills monthly, so last month's requests must not
+    // be mixed into the current cycle's count.
+    var day = function (d) {
+      return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+    };
+    var startDate = day(new Date(now.getFullYear(), now.getMonth(), 1));
     var endDate = day(now);
 
     return firstValid([
@@ -255,11 +261,27 @@ const EXA_SYNC_JS_TEMPLATE: &str = r#"
     banner = null;
   }
 
+  // Auto-sync windows are hidden; if nothing comes back after ~36s, tell Rust
+  // to close the window instead of leaving an invisible webview behind.
+  function abort() {
+    sent = true;
+    try {
+      window.__TAURI_INTERNALS__.invoke("plugin:event|emit", {
+        event: "exa-sync-abort",
+        payload: { connectionId: CONNECTION_ID }
+      });
+    } catch (e) {}
+  }
+
   function tick() {
     if (sent) return;
+    tries += 1;
     getJSON("/api/get-credits").then(function (credits) {
       // Not logged in yet — the login page also answers, just without credits.
-      if (!credits || typeof credits.orbCreditsInCents !== "number") return;
+      if (!credits || typeof credits.orbCreditsInCents !== "number") {
+        if (AUTO && tries >= 12) abort();
+        return;
+      }
 
       getJSON("/api/team-context").then(function (teamContext) {
         attempts = [];
@@ -275,6 +297,7 @@ const EXA_SYNC_JS_TEMPLATE: &str = r#"
             });
             if (!owns) {
               showBanner("当前登录的 Exa 账户不拥有这个连接使用的 API Key。请在此页面切换到对应账户，检测到匹配后会自动完成同步。");
+              if (AUTO && tries >= 12) abort();
               return;
             }
           }
@@ -298,7 +321,8 @@ const EXA_SYNC_JS_TEMPLATE: &str = r#"
     });
   }
 
-  setTimeout(tick, 600);
+  // Run immediately: hidden auto-sync windows may have their timers throttled.
+  tick();
   setInterval(tick, 3000);
 })();
 "#;
@@ -324,7 +348,9 @@ fn sanitize_connection_id(id: &str) -> String {
 ///
 /// One window per connection: two Exa accounts can be synced side by side, and
 /// each window's injected script carries its own expected key prefix.
-fn open_exa_connect(app: &AppHandle, connection_id: &str, key_prefix: Option<&str>) {
+/// `auto` windows start hidden so the quota page can refresh silently; if the
+/// Exa session is gone the login page shows itself instead of hiding the fix.
+fn open_exa_connect(app: &AppHandle, connection_id: &str, key_prefix: Option<&str>, auto: bool) {
     let conn = sanitize_connection_id(connection_id);
     if conn.is_empty() {
         boot_log("open_exa_connect: invalid connection id");
@@ -333,8 +359,10 @@ fn open_exa_connect(app: &AppHandle, connection_id: &str, key_prefix: Option<&st
 
     let label = format!("exa-connect-{conn}");
     if let Some(w) = app.get_webview_window(&label) {
-        let _ = w.show();
-        let _ = w.set_focus();
+        if !auto {
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
         return;
     }
 
@@ -345,7 +373,8 @@ fn open_exa_connect(app: &AppHandle, connection_id: &str, key_prefix: Option<&st
         .collect();
     let script = EXA_SYNC_JS_TEMPLATE
         .replace("__CONNECTION_ID__", &conn)
-        .replace("__KEY_PREFIX__", &prefix);
+        .replace("__KEY_PREFIX__", &prefix)
+        .replace("__AUTO__", if auto { "1" } else { "0" });
     let script_for_load = script.clone();
     let url: tauri::Url = match "https://dashboard.exa.ai/billing".parse() {
         Ok(u) => u,
@@ -357,12 +386,22 @@ fn open_exa_connect(app: &AppHandle, connection_id: &str, key_prefix: Option<&st
         .inner_size(1100.0, 820.0)
         .min_inner_size(800.0, 600.0)
         .center()
+        .visible(!auto)
         .initialization_script(&script)
         // WKWebView does not reliably re-run js_init_script across cross-origin
         // navigations (login → dashboard), so eval it again on every page load.
         .on_page_load(move |webview, payload| {
-            if payload.url().host_str() == Some("dashboard.exa.ai") {
-                let _ = webview.eval(script_for_load.as_str());
+            match payload.url().host_str() {
+                Some("dashboard.exa.ai") => {
+                    let _ = webview.eval(script_for_load.as_str());
+                }
+                // Hidden auto-sync hit the login page: surface it so the user
+                // can sign in, then the script finishes on its own.
+                Some("auth.exa.ai") if auto => {
+                    let _ = webview.show();
+                    let _ = webview.set_focus();
+                }
+                _ => {}
             }
         })
         .build()
@@ -959,13 +998,35 @@ fn main() {
                     .and_then(|v| v.get("keyPrefix"))
                     .and_then(|c| c.as_str())
                     .map(str::to_string);
+                let auto = payload
+                    .as_ref()
+                    .and_then(|v| v.get("auto"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
 
                 if let Some(id) = connection_id {
                     let app = handle_for_exa_open.clone();
-                    let _ = handle_for_exa_open
-                        .run_on_main_thread(move || open_exa_connect(&app, &id, key_prefix.as_deref()));
+                    let _ = handle_for_exa_open.run_on_main_thread(move || {
+                        open_exa_connect(&app, &id, key_prefix.as_deref(), auto)
+                    });
                 } else {
                     boot_log("open-exa-connect: missing connectionId");
+                }
+            });
+
+            // Hidden auto-sync gave up (no session / wrong account): drop it.
+            let handle_for_exa_abort = handle.clone();
+            handle.listen("exa-sync-abort", move |event| {
+                let id = serde_json::from_str::<serde_json::Value>(event.payload())
+                    .ok()
+                    .and_then(|v| v.get("connectionId").and_then(|c| c.as_str()).map(sanitize_connection_id))
+                    .unwrap_or_default();
+                if id.is_empty() {
+                    return;
+                }
+                if let Some(w) = handle_for_exa_abort.get_webview_window(&format!("exa-connect-{id}")) {
+                    boot_log(&format!("exa-sync-abort: closing {id}"));
+                    let _ = w.close();
                 }
             });
 

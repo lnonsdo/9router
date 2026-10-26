@@ -329,20 +329,32 @@ appear as cards on `/dashboard/quota`.
   service key and per-team enablement (`hasServiceApiKeys: false` on a free team), and the
   dashboard's `/api/get-credits` sits behind Vercel's bot challenge
   (`x-vercel-mitigated: challenge`). Two sources, in priority order:
-  - *Desktop sync (Tauri only)* — the cloud icon on the Exa card opens
-    `https://dashboard.exa.ai/billing` in a child webview. An injected script reads
+  - *Desktop sync (Tauri only)* — the refresh button on the Exa card (or its first open,
+    throttled to every 30 minutes) opens `https://dashboard.exa.ai/billing` in a child
+    webview. An injected script reads
     `/api/get-credits` + `/api/usage-traffic/volume` from that real browser context (the only
     readable path), emits the JSON as a Tauri event, and Rust writes it to
     `<DATA_DIR>/exa-sync/<connectionId>.json`. The handler then shows the real credit balance
-    plus a 30d request count. The page may only emit that one event
+    plus the current calendar month's request count (no rolling window: Exa bills monthly, so
+    last month's calls must not be folded in). The count is its own `📊 Requests` quota row
+    (`96 / 1,600`, 94%) so it keeps the table's progress-bar format: `used` is the calls served
+    this month, `total` is `used` + what the remaining grant buys at this month's average
+    cost per request (≈ `spent ÷ requests`), rounded to a round number. The row is omitted
+    until some money has actually been spent, since without spend there is no per-request
+    price to project. The page may only emit that one event
     (`src-tauri/capabilities/exa-connect.json`); custom commands stay ACL-blocked, same as the
     existing `hide-to-tray` pattern.
     Multi-account safe: one webview per connection, and the script compares
-    `/api/api-keys[].bearerPrefix` with the connection's key prefix (served by
+    `/api/get-api-keys[].bearerPrefix` with the connection's key prefix (served by
     `/api/providers/{id}/exa-key-hint`). A mismatched account shows an in-page banner and is
     rejected again server-side by `snapshotMatchesConnection`, so one account's team-level
     balance can never land on another account's card. The card names the team the snapshot
     came from.
+    Refresh is automatic: opening `/dashboard/quota` syncs any snapshot older than 30 minutes
+    in a **hidden** webview (`.visible(false)`), which closes itself as soon as it reports. If
+    the Exa session has expired, the hidden window surfaces the login page instead. The card's
+    normal refresh button also forces a real sync for Exa (a plain re-fetch would only replay
+    the cached snapshot).
   - *Local estimate (fallback)* — sums this month's locally recorded `costDollars.total`
     against the $10 monthly free grant; `providerSpecificData.exaMonthlyBudgetUsd` overrides
     the ceiling. Labelled "Exa (estimated)" and says explicitly that MCP/dashboard traffic is
