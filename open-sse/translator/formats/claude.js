@@ -308,7 +308,9 @@ export function normalizeClaudePassthrough(body, model = "") {
     for (const msg of body.messages) {
       if (!Array.isArray(msg.content)) continue;
       const kept = msg.content.filter(block => !(
-        (block?.type === CLAUDE_BLOCK.TOOL_RESULT || block?.type === CLAUDE_BLOCK.WEB_SEARCH_TOOL_RESULT)
+        (block?.type === CLAUDE_BLOCK.TOOL_RESULT
+          || block?.type === CLAUDE_BLOCK.WEB_SEARCH_TOOL_RESULT
+          || block?.type === CLAUDE_BLOCK.WEB_FETCH_TOOL_RESULT)
         && droppedServerToolUseIds.has(String(block.tool_use_id ?? ""))
       ));
       if (kept.length !== msg.content.length) {

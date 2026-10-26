@@ -56,6 +56,11 @@ const SERVER_TOOL_KINDS = [
 const WEB_SEARCH_MAX_RESULTS = 8;   // per page, mirrors Anthropic's small default page
 const WEB_FETCH_MAX_CHARS = 50000;  // rough stand-in for Anthropic's max_content_tokens
 const DEFAULT_MAX_USES_PER_TOOL = 5;
+const MAX_USES_PER_TOOL = 16;
+// Hard ceiling on tool executions per request, across every emulated kind.
+// max_uses is client-controlled; without a global cap a request declaring both
+// tools at 16 would fan out to 32 provider calls (and as many upstream rounds).
+const MAX_TOTAL_TOOL_USES = 16;
 
 // Proxy gateways observed to normalize away Anthropic-specific blocks (the
 // tool_reference → HTTP 422 class of failures) are not a separate signal: they
@@ -84,20 +89,31 @@ function adapterEntry(adapterConfig, kind) {
  */
 export function detectServerToolRequests(body, sourceFormat = FORMATS.CLAUDE) {
   const tools = Array.isArray(body?.tools) ? body.tools : [];
-  const found = [];
+  // One entry per kind: a client may declare several versions of the same tool
+  // (web_search_20250305 + web_search_20260209), and counting each one would
+  // multiply the emulation budget.
+  const byKind = new Map();
   for (const tool of tools) {
     const type = String(tool?.type || "");
     if (sourceFormat === FORMATS.OPENAI_RESPONSES && type === OPENAI_BLOCK.FUNCTION) continue;
     const spec = SERVER_TOOL_KINDS.find(s => type.startsWith(s.typePrefix));
     if (!spec) continue;
-    found.push({
+    const maxUses = Number.isInteger(tool.max_uses) && tool.max_uses > 0
+      ? Math.min(tool.max_uses, MAX_USES_PER_TOOL)
+      : DEFAULT_MAX_USES_PER_TOOL;
+    const existing = byKind.get(spec.kind);
+    if (existing) {
+      existing.maxUses = Math.max(existing.maxUses, maxUses);
+      continue;
+    }
+    byKind.set(spec.kind, {
       kind: spec.kind,
       type,
       name: String(tool.name || spec.defaultName),
-      maxUses: Number.isInteger(tool.max_uses) && tool.max_uses > 0 ? Math.min(tool.max_uses, 16) : DEFAULT_MAX_USES_PER_TOOL,
+      maxUses,
     });
   }
-  return found;
+  return [...byKind.values()];
 }
 
 /**
@@ -230,18 +246,17 @@ function downgradeResponsesInput(body) {
  * The model's own `search` capability is NOT the signal: it says the model could
  * search, not that this endpoint accepts the protocol's server tool type.
  */
-function whitelistCovers(types, tools) {
-  if (!Array.isArray(types) || types.length === 0) return false;
-  // Partial support would leave part of the requested toolset stripped, so
-  // require every requested type to be whitelisted before stepping aside.
-  return tools.every(t => types.includes(t.type));
-}
-
-function targetRunsServerTools(sourceFormat, targetFormat, provider, tools) {
+// Per-TYPE native check. The all-or-nothing question ("emulate this request?")
+// and the per-tool question ("may this declaration stay in the outgoing list?")
+// are different: a whitelist that covers only web_search must keep web_search
+// native while web_fetch is emulated.
+function targetRunsServerToolType(sourceFormat, targetFormat, provider, type) {
+  const t = String(type || "");
   if (sourceFormat === FORMATS.CLAUDE) {
     if (targetFormat !== FORMATS.CLAUDE) return false;
     if (isNativePassthrough("claude", provider)) return true;
-    return whitelistCovers(PROVIDERS[provider]?.quirks?.claudeSupportedToolTypes, tools);
+    const types = PROVIDERS[provider]?.quirks?.claudeSupportedToolTypes;
+    return Array.isArray(types) && types.includes(t);
   }
   if (sourceFormat === FORMATS.OPENAI_RESPONSES) {
     if (targetFormat !== FORMATS.OPENAI_RESPONSES) return false;
@@ -251,9 +266,18 @@ function targetRunsServerTools(sourceFormat, targetFormat, provider, tools) {
     // denials are caught at runtime by chatCore's error fallback.
     const unsupported = PROVIDERS[provider]?.quirks?.responsesUnsupportedToolTypes;
     if (!Array.isArray(unsupported) || unsupported.length === 0) return true;
-    return !tools.some(t => unsupported.includes(t.type));
+    // Prefix match: the deny-list names the family ("web_search") while the
+    // client may send a versioned variant ("web_search_preview_2025_03_11").
+    return !unsupported.some(prefix => t.startsWith(prefix));
   }
   return false;
+}
+
+function targetRunsServerTools(sourceFormat, targetFormat, provider, tools) {
+  // Emulation is needed as soon as ONE requested tool cannot run natively: the
+  // whole request then goes through the emulated loop (a partially emulated
+  // request would still have to round-trip every tool through the gateway).
+  return tools.every(t => targetRunsServerToolType(sourceFormat, targetFormat, provider, t.type));
 }
 
 /**
@@ -281,15 +305,20 @@ export function planServerToolEmulation({ body, sourceFormat, targetFormat, prov
   if (!forceEmulate && targetRunsServerTools(sourceFormat, targetFormat, provider, requested)) return null;
 
   let degradedBody = downgradeServerToolHistory(body, sourceFormat);
-  // Drop the emulated server tools from the outgoing tool list: the translator
-  // would otherwise convert each into a parameterless function tool that the
-  // upstream could call with no usable input.
+  // Drop the server tools this request will emulate, and any emulatable kind the
+  // target cannot run natively (unconfigured pool): leaving the latter in place
+  // makes the translator emit a parameterless function tool the upstream may
+  // call. A type the target DOES accept natively stays untouched — a whitelist
+  // covering only web_search must not lose web_search just because web_fetch is
+  // being emulated.
   if (Array.isArray(degradedBody.tools)) {
     const kinds = new Set(emulatable.map(t => t.kind));
     const filtered = degradedBody.tools.filter(tool => {
       const type = String(tool?.type || "");
       const spec = SERVER_TOOL_KINDS.find(s => type.startsWith(s.typePrefix));
-      return !(spec && kinds.has(spec.kind));
+      if (!spec) return true;
+      if (kinds.has(spec.kind)) return false;
+      return targetRunsServerToolType(sourceFormat, targetFormat, provider, type);
     });
     if (filtered.length !== degradedBody.tools.length) {
       degradedBody = { ...degradedBody, tools: filtered };
@@ -375,17 +404,35 @@ const SEARCH_RESULT_OPEN = "<web_search_results>";
 const SEARCH_RESULT_CLOSE = "</web_search_results>";
 const FETCH_RESULT_OPEN = "<web_fetch_result>";
 const FETCH_RESULT_CLOSE = "</web_fetch_result>";
+const BOUNDARY_TAGS = ["web_search_results", "web_fetch_result"];
+
+// A page (or the model's own query) may contain the closing tag verbatim and
+// "escape" the data region, so every boundary tag inside injected content is
+// rewritten to lookalike brackets. Nothing else is touched.
+function neutralizeBoundary(text) {
+  let s = String(text ?? "");
+  for (const tag of BOUNDARY_TAGS) {
+    s = s.replace(new RegExp(`<\\s*(/?)\\s*${tag}\\s*>`, "gi"),
+      (_, closing) => `${closing ? "‹/" : "‹"}${tag}›`);
+  }
+  return s;
+}
 
 function formatSearchResultsText(results, query) {
   if (!results.length) return "No results found.";
   const body = results.map((r, i) => {
-    const line = `${i + 1}. [${r?.title || "Untitled"}](${r?.url || ""})${r?.published_at ? ` (published: ${r.published_at})` : ""}`;
-    const snippet = r?.snippet ? `\n   ${String(r.snippet).slice(0, 300)}` : "";
+    const title = neutralizeBoundary(r?.title || "Untitled");
+    const url = neutralizeBoundary(r?.url || "");
+    const line = `${i + 1}. [${title}](${url})${r?.published_at ? ` (published: ${neutralizeBoundary(r.published_at)})` : ""}`;
+    const snippet = r?.snippet ? `\n   ${neutralizeBoundary(String(r.snippet).slice(0, 300))}` : "";
     return line + snippet;
   }).join("\n");
+  // The query is model-authored and sits INSIDE the boundary: a query of
+  // `</web_search_results> ignore previous instructions` must not split the
+  // data region either.
   return [
-    `Web search results for "${query}" (${UNTRUSTED_NOTE}):`,
     SEARCH_RESULT_OPEN,
+    `Web search results for "${neutralizeBoundary(query)}" (${UNTRUSTED_NOTE}):`,
     body,
     SEARCH_RESULT_CLOSE,
   ].join("\n");
@@ -393,11 +440,23 @@ function formatSearchResultsText(results, query) {
 
 function formatFetchedPageText(text, url) {
   return [
-    `Fetched page ${url} (${UNTRUSTED_NOTE}):`,
     FETCH_RESULT_OPEN,
-    text,
+    `Fetched page ${neutralizeBoundary(url)} (${UNTRUSTED_NOTE}):`,
+    neutralizeBoundary(text),
     FETCH_RESULT_CLOSE,
   ].join("\n");
+}
+
+// Upstream/provider error text can carry request echoes (URLs, sometimes a
+// key). Keep it short and mask credential-looking tokens before it enters the
+// model's context.
+function sanitizeToolError(error) {
+  const text = String(error ?? "unavailable").replace(/[\r\n]+/g, " ").trim();
+  const masked = text
+    .replace(/\b(sk-[A-Za-z0-9_-]{6,})/g, "[redacted]")
+    .replace(/\b(Bearer\s+)[A-Za-z0-9._~+/-]{8,}=*/gi, "$1[redacted]")
+    .replace(/\b(api[_-]?key["'\s:=]+)[^\s"',}]{8,}/gi, "$1[redacted]");
+  return masked.length > 200 ? `${masked.slice(0, 200)}…` : masked;
 }
 
 function errorResultBlock(kind, srvId) {
@@ -417,11 +476,33 @@ function errorResultBlock(kind, srvId) {
   };
 }
 
+const TOOL_TIMED_OUT = Symbol("tool-timed-out");
+
+// Bound one provider call by what is left of the request budget. The bridge
+// cannot be aborted mid-flight, so the race simply stops waiting on it.
+function raceWithTimeout(promise, timeoutMs) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return Promise.resolve(TOOL_TIMED_OUT);
+  // The loser of the race is still pending: attach a handler so a late
+  // rejection after the timeout does not surface as an unhandled rejection.
+  const guarded = Promise.resolve(promise);
+  guarded.catch(() => {});
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(TOOL_TIMED_OUT), timeoutMs);
+  });
+  return Promise.race([guarded, timeout]).finally(() => clearTimeout(timer));
+}
+
 // Execute one emulated tool call through the injected bridge. Failures become
 // an error tool_result (the model can adapt) — never an aborted request.
-async function executeEmulatedTool({ kind, input, srvId, executeServerTool, log }) {
+async function executeEmulatedTool({ kind, input, srvId, executeServerTool, log, timeoutMs }) {
   try {
-    const res = await executeServerTool({ kind, input: input || {} });
+    const res = await raceWithTimeout(executeServerTool({ kind, input: input || {} }), timeoutMs);
+    if (res === TOOL_TIMED_OUT) {
+      const errText = `Web tool "${kind}" timed out`;
+      log?.warn?.("WEBTOOLS", errText);
+      return { text: errText, block: errorResultBlock(kind, srvId) };
+    }
     if (res?.ok) {
       if (kind === "web_fetch") {
         const text = String(res.data?.text || "");
@@ -462,16 +543,15 @@ async function executeEmulatedTool({ kind, input, srvId, executeServerTool, log 
             encrypted_content: `emu_content_${i}_${String(r?.url || "").replace(/[^a-zA-Z0-9]/g, "").slice(0, 32)}`,
             snippet: String(r?.snippet || ""),
             page_age: r?.published_at || undefined,
-            encrypted_index: `emu_${i}`,
           })),
         },
       };
     }
-    const errText = `Web tool "${kind}" failed: ${String(res?.error || "unavailable")}`;
+    const errText = `Web tool "${kind}" failed: ${sanitizeToolError(res?.error)}`;
     log?.warn?.("WEBTOOLS", errText);
     return { text: errText, block: errorResultBlock(kind, srvId) };
   } catch (e) {
-    const errText = `Web tool "${kind}" threw: ${e?.message || e}`;
+    const errText = `Web tool "${kind}" threw: ${sanitizeToolError(e?.message || e)}`;
     log?.warn?.("WEBTOOLS", errText);
     return { text: errText, block: errorResultBlock(kind, srvId) };
   }
@@ -497,6 +577,11 @@ async function parseUpstreamRound(providerResponse, model, responseFormat) {
     } catch {
       throw new Error("upstream returned a non-JSON body during tool emulation");
     }
+  }
+  // A 2xx carrying an error object is a provider failure, not an empty answer:
+  // treating it as content would feed the model a bogus round.
+  if (body?.error && !Array.isArray(body?.content) && !Array.isArray(body?.output) && !Array.isArray(body?.choices)) {
+    throw new Error(sanitizeToolError(body.error?.message || body.error?.type || body.error));
   }
   // Responses bodies carry `output`; Claude-compatible endpoints answer in
   // message shape directly; anything that still looks like an OpenAI
@@ -524,7 +609,7 @@ function responsesToClaudeMessage(body) {
       }
     } else if (item?.type === RESPONSES_ITEM.REASONING) {
       const text = (item.summary || []).map(s => s?.text).filter(Boolean).join("\n");
-      if (text) content.push({ type: CLAUDE_BLOCK.THINKING, thinking: text });
+      if (text) content.push({ type: CLAUDE_BLOCK.THINKING, thinking: text, _responsesItem: item });
     } else if (item?.type === RESPONSES_ITEM.FUNCTION_CALL) {
       hasTool = true;
       let input = {};
@@ -616,6 +701,7 @@ function parseClaudeSseToMessage(rawSSE) {
         const delta = data.delta || {};
         if (delta.type === "text_delta") block.text = (block.text || "") + (delta.text || "");
         else if (delta.type === "thinking_delta") block.thinking = (block.thinking || "") + (delta.thinking || "");
+        else if (delta.type === "signature_delta") block.signature = delta.signature;
         else if (delta.type === "input_json_delta") block._json = (block._json || "") + (delta.partial_json || "");
         break;
       }
@@ -640,17 +726,26 @@ function parseClaudeSseToMessage(rawSSE) {
         try { input = JSON.parse(block._json || "{}"); } catch { /* leave {} */ }
         return { type: block.type, id: block.id, name: block.name, input };
       }
-      if (block.type === CLAUDE_BLOCK.THINKING) return { type: block.type, thinking: block.thinking || "" };
+      if (block.type === CLAUDE_BLOCK.THINKING) {
+        const thinking = { type: block.type, thinking: block.thinking || "" };
+        if (block.signature) thinking.signature = block.signature;
+        return thinking;
+      }
       return block; // result blocks and text (already complete on start)
     });
   return message;
 }
 
 // Append one emulated round to the upstream history, in the target's shape:
-//   Claude   → assistant(text? + tool_use blocks) + user(tool_result blocks)
-//   OpenAI   → assistant(tool_calls) + role:"tool" messages
-//   Responses→ input items: assistant message?, function_call, function_call_output
-function appendToolRound(body, assistantText, calls, targetFormat) {
+//   Claude   → assistant(thinking? + text? + tool_use blocks) + user(tool_result blocks)
+//   OpenAI   → assistant(reasoning_content? + tool_calls) + role:"tool" messages
+//   Responses→ input items: reasoning?, assistant message?, function_call, function_call_output
+//
+// Reasoning must ride along: several backends (DeepSeek/Kimi thinking modes,
+// Responses store=false) reject the next turn when the assistant tool-call
+// message drops the reasoning it just produced. The blocks are the ones the
+// upstream returned, so replaying them is always in that upstream's own shape.
+function appendToolRound(body, assistantText, calls, targetFormat, thinkingBlocks = []) {
   if (targetFormat === FORMATS.OPENAI_RESPONSES) {
     if (typeof body.input === "string") {
       body.input = [{
@@ -660,6 +755,18 @@ function appendToolRound(body, assistantText, calls, targetFormat) {
       }];
     }
     if (!Array.isArray(body.input)) body.input = [];
+    for (const block of thinkingBlocks) {
+      if (block?._responsesItem) {
+        body.input.push(block._responsesItem);
+        continue;
+      }
+      const text = String(block?.thinking || "");
+      if (!text) continue;
+      body.input.push({
+        type: RESPONSES_ITEM.REASONING,
+        summary: [{ type: RESPONSES_ITEM.SUMMARY_TEXT, text }],
+      });
+    }
     if (assistantText) {
       body.input.push({
         type: RESPONSES_ITEM.MESSAGE,
@@ -690,6 +797,12 @@ function appendToolRound(body, assistantText, calls, targetFormat) {
   const messages = body.messages;
   if (targetFormat === FORMATS.CLAUDE) {
     const content = [];
+    for (const block of thinkingBlocks) {
+      if (!block?.thinking) continue;
+      const thinking = { type: CLAUDE_BLOCK.THINKING, thinking: block.thinking };
+      if (block.signature) thinking.signature = block.signature;
+      content.push(thinking);
+    }
     if (assistantText) content.push({ type: CLAUDE_BLOCK.TEXT, text: assistantText });
     for (const c of calls) {
       content.push({ type: CLAUDE_BLOCK.TOOL_USE, id: c.id, name: c.name, input: c.input || {} });
@@ -705,7 +818,7 @@ function appendToolRound(body, assistantText, calls, targetFormat) {
     });
     return;
   }
-  messages.push({
+  const assistantMessage = {
     role: ROLE.ASSISTANT,
     content: assistantText || "",
     tool_calls: calls.map(c => ({
@@ -713,7 +826,10 @@ function appendToolRound(body, assistantText, calls, targetFormat) {
       type: "function",
       function: { name: c.name, arguments: JSON.stringify(c.input || {}) },
     })),
-  });
+  };
+  const reasoningText = thinkingBlocks.map(b => b?.thinking).filter(Boolean).join("\n");
+  if (reasoningText) assistantMessage.reasoning_content = reasoningText;
+  messages.push(assistantMessage);
   for (const c of calls) {
     messages.push({ role: ROLE.TOOL, tool_call_id: c.id, content: c.resultText });
   }
@@ -740,7 +856,10 @@ export async function runServerToolEmulation({ firstResponse, plan, translatedBo
   // Last round's prompt size — the client-facing input_tokens (Anthropic reports
   // the final context, not the sum of every internal round).
   let lastInputTokens = 0;
-  const maxToolUses = plan.tools.reduce((sum, t) => sum + (t.maxUses || DEFAULT_MAX_USES_PER_TOOL), 0);
+  const maxToolUses = Math.min(
+    MAX_TOTAL_TOOL_USES,
+    plan.tools.reduce((sum, t) => sum + (t.maxUses || DEFAULT_MAX_USES_PER_TOOL), 0),
+  );
   const deadline = Date.now() + EMULATION_TOTAL_TIMEOUT_MS;
   let remainingUses = maxToolUses;
   let stopReason = CLAUDE_STOP.END_TURN;
@@ -769,11 +888,15 @@ export async function runServerToolEmulation({ firstResponse, plan, translatedBo
     billed.output_tokens += claudeMsg.usage?.output_tokens || 0;
 
     const roundText = [];
+    const roundThinking = [];
     const emulatedCalls = [];
     const passthroughUses = [];
     for (const block of claudeMsg.content || []) {
       if (block.type === CLAUDE_BLOCK.THINKING) {
-        if (block.thinking) emitted.push(block);
+        if (block.thinking) {
+          emitted.push(block);
+          roundThinking.push(block);
+        }
       } else if (block.type === CLAUDE_BLOCK.TEXT) {
         if (block.text) { emitted.push(block); roundText.push(block.text); }
       } else if (block.type === CLAUDE_BLOCK.TOOL_USE) {
@@ -793,6 +916,18 @@ export async function runServerToolEmulation({ firstResponse, plan, translatedBo
 
     const toolCallsForUpstream = [];
     for (const call of emulatedCalls) {
+      // Checked per call, not only per round: a single web_fetch can take
+      // minutes, and the old placement let a round overshoot the deadline by
+      // that much before noticing.
+      if (Date.now() > deadline) {
+        log?.warn?.("WEBTOOLS", `emulation deadline reached before "${call.name}"`);
+        toolCallsForUpstream.push({
+          id: call.id, name: call.name, input: call.input || {},
+          resultText: `Web tool "${call.name}" skipped: this request exceeded the ${Math.round(EMULATION_TOTAL_TIMEOUT_MS / 1000)}s emulation budget. Answer with what you have.`,
+          raw: call._responsesItem,
+        });
+        continue;
+      }
       if (remainingUses <= 0) {
         // Budget exhausted and the upstream still called the (already removed)
         // tool: report the limit so it stops, without surfacing extra blocks.
@@ -804,9 +939,15 @@ export async function runServerToolEmulation({ firstResponse, plan, translatedBo
         continue;
       }
       const srvId = newServerToolUseId();
-      emitted.push({ type: CLAUDE_BLOCK.SERVER_TOOL_USE, id: srvId, name: call.name, input: call.input || {} });
-      const kind = plan.tools.find(t => t.emulatedName === call.name)?.kind;
-      const executed = await executeEmulatedTool({ kind, input: call.input, srvId, executeServerTool, log });
+      const planEntry = plan.tools.find(t => t.emulatedName === call.name);
+      // Echo the client's own spelling, not the de-collided upstream one: the
+      // client declared `web_search`, not `web_search_emu`.
+      emitted.push({ type: CLAUDE_BLOCK.SERVER_TOOL_USE, id: srvId, name: planEntry?.name || call.name, input: call.input || {} });
+      const kind = planEntry?.kind;
+      const executed = await executeEmulatedTool({
+        kind, input: call.input, srvId, executeServerTool, log,
+        timeoutMs: deadline - Date.now(),
+      });
       emitted.push(executed.block);
       toolCallsForUpstream.push({ id: call.id, name: call.name, input: call.input || {}, resultText: executed.text, raw: call._responsesItem });
       remainingUses--;
@@ -826,7 +967,7 @@ export async function runServerToolEmulation({ firstResponse, plan, translatedBo
       break;
     }
 
-    appendToolRound(translatedBody, roundText.join(""), toolCallsForUpstream, targetFormat);
+    appendToolRound(translatedBody, roundText.join(""), toolCallsForUpstream, targetFormat, roundThinking);
     if (remainingUses <= 0) {
       const emuNames = new Set(plan.tools.map(t => t.emulatedName));
       translatedBody.tools = (translatedBody.tools || []).filter(t => !emuNames.has(t?.function?.name) && !emuNames.has(t?.name));
@@ -902,8 +1043,15 @@ export function claudeMessageToSseBody(msg) {
     } else if (block.type === CLAUDE_BLOCK.THINKING) {
       push("content_block_start", { type: "content_block_start", index, content_block: { type: "thinking", thinking: "" } });
       if (block.thinking) push("content_block_delta", { type: "content_block_delta", index, delta: { type: "thinking_delta", thinking: block.thinking } });
+      if (block.signature) push("content_block_delta", { type: "content_block_delta", index, delta: { type: "signature_delta", signature: block.signature } });
     } else if (block.type === CLAUDE_BLOCK.SERVER_TOOL_USE) {
       push("content_block_start", { type: "content_block_start", index, content_block: { type: CLAUDE_BLOCK.SERVER_TOOL_USE, id: block.id, name: block.name, input: {} } });
+      push("content_block_delta", { type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: JSON.stringify(block.input || {}) } });
+    } else if (block.type === CLAUDE_BLOCK.TOOL_USE) {
+      // A client tool the client still has to execute (mixed round). SDK
+      // accumulators build the input from deltas only — sending it on
+      // content_block_start leaves the client with `{}`.
+      push("content_block_start", { type: "content_block_start", index, content_block: { type: CLAUDE_BLOCK.TOOL_USE, id: block.id, name: block.name, input: {} } });
       push("content_block_delta", { type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: JSON.stringify(block.input || {}) } });
     } else {
       // web_search_tool_result / web_fetch_tool_result — complete on start.
@@ -991,6 +1139,19 @@ export function claudeMessageToResponsesResponse(claudeMsg, { model } = {}) {
           : { type: "search", query: String(block.input?.query || "") },
       });
     } else if (block?.type === CLAUDE_BLOCK.TOOL_USE) {
+      const raw = block._responsesItem;
+      if (raw?.type === RESPONSES_ITEM.CUSTOM_TOOL_CALL) {
+        // Freeform client tool (type:"custom"): a function_call would make the
+        // client look for a `parameters` schema it never declared.
+        output.push({
+          type: RESPONSES_ITEM.CUSTOM_TOOL_CALL,
+          id: responsesId("ctc"),
+          call_id: block.id,
+          name: block.name,
+          input: typeof raw.input === "string" ? raw.input : String(block.input?.input ?? ""),
+        });
+        continue;
+      }
       output.push({
         type: RESPONSES_ITEM.FUNCTION_CALL,
         id: responsesId("fc"),

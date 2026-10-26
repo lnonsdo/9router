@@ -9,6 +9,24 @@
  */
 import { claudeMessageToResponsesResponse, claudeMessageToSseBody, responsesToSseBody, runServerToolEmulation } from "./serverToolEmulator.js";
 import { FORMATS } from "../translator/formats.js";
+import { restoreToolNames } from "../utils/opencodeFingerprint.js";
+
+// Blocks the loop builds can carry bookkeeping (`_responsesItem`, the raw
+// upstream item used to echo a round back) that must never reach the client.
+function stripInternalFields(msg) {
+  if (!msg || !Array.isArray(msg.content)) return msg;
+  return {
+    ...msg,
+    content: msg.content.map((block) => {
+      if (!block || typeof block !== "object") return block;
+      const clean = {};
+      for (const [key, value] of Object.entries(block)) {
+        if (!key.startsWith("_")) clean[key] = value;
+      }
+      return clean;
+    }),
+  };
+}
 
 /**
  * Drive the emulation loop against the provider.
@@ -67,7 +85,9 @@ export function buildEmulatedResponse({ emuResult, wantsSse, ctx }) {
     formatDoneLine, saveUsageStats, saveRequestDetail, buildRequestDetail, extractRequestConfig,
   } = ctx;
 
-  const claudeResponse = emuResult.claudeResponse;
+  // Restore caller tool spellings (the upstream may have cloaked them) before
+  // either wire is synthesized.
+  const claudeResponse = restoreToolNames(emuResult.claudeResponse, ctx.toolNameMap);
   // Usage tracking wants what the router actually paid across every round; the
   // client-facing response carries Anthropic semantics (final context size).
   const usage = {
@@ -115,7 +135,8 @@ export function buildEmulatedResponse({ emuResult, wantsSse, ctx }) {
     });
     payload = wantsSse ? responsesToSseBody(response) : JSON.stringify(response);
   } else {
-    payload = wantsSse ? claudeMessageToSseBody(claudeResponse) : JSON.stringify(claudeResponse);
+    const clientMessage = stripInternalFields(claudeResponse);
+    payload = wantsSse ? claudeMessageToSseBody(clientMessage) : JSON.stringify(clientMessage);
   }
 
   return {
