@@ -26,7 +26,7 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
-import { getKeyAccessContext, enforceKeyAccess, filterAdapterModels } from "../services/keyAccess.js";
+import { getKeyAccessContext, enforceKeyAccess, filterAdapterModels, filterWebToolsAdapterForKey } from "../services/keyAccess.js";
 import { resolveSmartChoice } from "../services/systemoneRouter.js";
 import { createWebToolsExecutor } from "../services/webToolsBridge.js";
 
@@ -314,7 +314,11 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
     // Web Tools Adapter: emulate Anthropic server tools (web_search/web_fetch)
     // for targets that cannot run them natively, via the configured providers.
-    const webToolsAdapter = chatSettings.webToolsAdapter || null;
+    // The adapter's providers are chosen by the gateway, not by the client, so
+    // a restricted API key must not reach providers outside its allow list.
+    const webToolsAdapter = chatSettings.webToolsAdapter
+      ? await filterWebToolsAdapterForKey(await getKeyAccessContext(request), chatSettings.webToolsAdapter)
+      : null;
     const webTools = webToolsAdapter ? createWebToolsExecutor({ adapterConfig: webToolsAdapter }) : null;
     const result = await handleChatCore({
       body: { ...body, model: `${provider}/${model}` },

@@ -176,6 +176,34 @@ export async function filterAdapterModels(ctx, augmented, original) {
   return out;
 }
 
+/**
+ * Web Tools Adapter pools are providers the GATEWAY picks to execute tools for
+ * the model (search/fetch). For a restricted key keep only the providers it may
+ * call; a pool left with none is disabled, so the adapter never spends a
+ * provider account the key could not reach directly (the model may still use
+ * its native tools).
+ */
+export async function filterWebToolsAdapterForKey(ctx, adapterConfig) {
+  if (!ctx || !adapterConfig) return adapterConfig;
+  const sets = await getAllowSets(ctx);
+  const filterEntry = (entry) => {
+    if (!entry?.enabled || !Array.isArray(entry.providers) || entry.providers.length === 0) return entry;
+    const allowed = entry.providers.filter((p) => sets.providers.has(lower(resolveProviderId(p))));
+    if (allowed.length === entry.providers.length) return entry;
+    for (const p of entry.providers) {
+      if (!allowed.includes(p)) {
+        log.info("AUTH", `key-access: key "${ctx.keyName}" skips web tools provider "${p}" (not allowed)`);
+      }
+    }
+    return { ...entry, providers: allowed, enabled: allowed.length > 0 };
+  };
+  return {
+    ...adapterConfig,
+    webSearch: filterEntry(adapterConfig.webSearch),
+    webFetch: filterEntry(adapterConfig.webFetch),
+  };
+}
+
 /** /v1/models: a restricted key sees only the combos and models it may call. */
 export async function filterModelsListForKey(ctx, list) {
   if (!ctx || !Array.isArray(list)) return list;
