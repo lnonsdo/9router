@@ -233,6 +233,19 @@ export function translateNonStreamingResponse(responseBody, targetFormat, source
 }
 
 /**
+ * translateNonStreamingResponse() lands on OpenAI Chat Completions for every
+ * non-OpenAI target (Gemini, Ollama, …). A Claude or Responses client must not
+ * receive that body, so convert once more — the non-streaming counterpart of
+ * the streaming path's per-sourceFormat response translators.
+ */
+export function pivotToClientWire(body, sourceFormat, customToolNames = null) {
+  if (!Array.isArray(body?.choices)) return body;
+  if (sourceFormat === FORMATS.CLAUDE) return openAICompletionToClaudeMessage(body);
+  if (sourceFormat === FORMATS.OPENAI_RESPONSES) return openAICompletionToResponses(body, customToolNames);
+  return body;
+}
+
+/**
  * Handle non-streaming response from provider.
  */
 export async function handleNonStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, body, stream, translatedBody, finalBody, requestStartTime, connectionId, sessionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, trackDone, appendLog, pxpipe, reqTag, log }) {
@@ -280,13 +293,22 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   saveUsageStats({ provider, model, tokens: usage, connectionId, sessionId, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
   if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency: { total: Date.now() - requestStartTime } }));
 
-  const translatedResponse = needsTranslation(targetFormat, sourceFormat)
+  // translateNonStreamingResponse() lands on OpenAI Chat Completions for every
+  // non-OpenAI target (Gemini, Ollama, …) and returns same-format bodies
+  // untouched. When the CLIENT is on a different wire, pivot once more so it
+  // receives the protocol it asked for: a Claude client must never see
+  // `choices`, and a Responses client must see `output`. Without this a
+  // non-streaming request translated through Gemini/Kiro reaches the client on
+  // the wrong protocol (a missing `stream` flag now means non-streaming).
+  let translatedResponse = needsTranslation(targetFormat, sourceFormat)
     ? translateNonStreamingResponse(responseBody, targetFormat, sourceFormat, customToolNames)
     : responseBody;
+  translatedResponse = pivotToClientWire(translatedResponse, sourceFormat, customToolNames);
   const isClaudeMessageResponse = sourceFormat === FORMATS.CLAUDE && translatedResponse?.type === "message";
   // Responses-format translation produces a `object:"response"` body with no
   // `choices`; skip the Chat-Completions-specific post-processing below for it.
-  const isResponsesResponse = sourceFormat === FORMATS.OPENAI_RESPONSES && translatedResponse?.object === "response";
+  const isResponsesResponse = sourceFormat === FORMATS.OPENAI_RESPONSES
+    && (translatedResponse?.object === "response" || Array.isArray(translatedResponse?.output));
 
   // Fix finish_reason for tool_calls: some providers return non-standard values (e.g. "other")
   if (translatedResponse?.choices?.[0]) {
