@@ -324,7 +324,12 @@ appear as cards on `/dashboard/quota`.
   connection's recorded cost over a window.
 - **Tavily** — `GET https://api.tavily.com/usage` with the normal `tvly-` key. Shows the plan
   bucket, the per-key bucket, and pay-as-you-go when capped. `null` limits become
-  `unlimited: true`; the endpoint exposes no cycle end, so `resetAt` stays null.
+  `unlimited: true`; the endpoint exposes no cycle end, so `resetAt` stays null. Tavily answers
+  a burst of `/usage` reads with 429 ("excessive requests"), and the dashboard polls every card
+  on a 60s timer, so the handler keeps the last reading for 5 minutes (a manual refresh is
+  allowed once a minute) and backs off for 2 minutes after a 429. On a 429/5xx it keeps showing
+  the previous numbers with a "last reading" note instead of blanking the card; with no reading
+  cached it shows a short rate-limit message.
 - **Exa** — no per-key quota endpoint is reachable with a normal key: Team Management needs a
   service key and per-team enablement (`hasServiceApiKeys: false` on a free team), and the
   dashboard's `/api/get-credits` sits behind Vercel's bot challenge

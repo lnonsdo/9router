@@ -22,7 +22,7 @@ export async function getUsageForProvider(connection, proxyOptions = null, optio
     case "exa":
       return getExaUsage({ ...connection, connectionId: connection.id });
     case "tavily":
-      return getTavilyUsage(connection.apiKey, proxyOptions);
+      return getTavilyUsage(connection.apiKey, proxyOptions, options);
     default:
       return getUsageForProviderUpstream(connection, proxyOptions, options);
   }

@@ -83,7 +83,7 @@ describe("Tavily usage handler", () => {
       },
     }));
 
-    const result = await getTavilyUsage("tvly-test");
+    const result = await getTavilyUsage("tvly-map");
 
     expect(result.plan).toBe("Bootstrap");
     expect(result.quotas["Plan credits (Bootstrap)"]).toMatchObject({ used: 500, total: 4000 });
@@ -98,7 +98,7 @@ describe("Tavily usage handler", () => {
       account: { current_plan: "Pay as you go", plan_usage: 12, plan_limit: null },
     }));
 
-    const result = await getTavilyUsage("tvly-test");
+    const result = await getTavilyUsage("tvly-uncapped");
 
     expect(result.quotas["Plan credits (Pay as you go)"]).toMatchObject({ used: 12, unlimited: true });
     expect(result.quotas["This key"]).toMatchObject({ used: 12, unlimited: true });
@@ -111,6 +111,92 @@ describe("Tavily usage handler", () => {
 
     expect(result.quotas).toBeUndefined();
     expect(result.message).toMatch(/authentication failed/i);
+  });
+
+  it("reuses a recent reading instead of re-asking every poll", async () => {
+    proxyAwareFetch.mockResolvedValue(jsonResponse({
+      key: { usage: 5, limit: 1000 },
+      account: { current_plan: "Bootstrap", plan_usage: 5, plan_limit: 4000 },
+    }));
+
+    // The dashboard polls all cards on a 60s timer; only one call may leave.
+    await getTavilyUsage("tvly-cache");
+    await getTavilyUsage("tvly-cache");
+    await getTavilyUsage("tvly-cache");
+
+    expect(proxyAwareFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the numbers on screen when Tavily rate-limits the usage API", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    proxyAwareFetch.mockResolvedValueOnce(jsonResponse({
+      key: { usage: 42, limit: 1000 },
+      account: { current_plan: "Bootstrap", plan_usage: 42, plan_limit: 4000 },
+    }));
+
+    await getTavilyUsage("tvly-429");
+    now.mockReturnValue(1_000_000 + 10 * 60_000); // cache expired
+    proxyAwareFetch.mockResolvedValueOnce(new Response("blocked", { status: 429 }));
+
+    const result = await getTavilyUsage("tvly-429");
+
+    expect(result.quotas["This key"]).toMatchObject({ used: 42, total: 1000 });
+    expect(result.message).toMatch(/rate-limited/i);
+    expect(result.message).toMatch(/last reading/i);
+    now.mockRestore();
+  });
+
+  it("reports a rate limit plainly when nothing is cached yet", async () => {
+    proxyAwareFetch.mockResolvedValue(new Response("blocked", { status: 429 }));
+
+    const result = await getTavilyUsage("tvly-429-cold");
+
+    expect(result.quotas).toBeUndefined();
+    expect(result.message).toMatch(/rate-limited/i);
+    expect(result.message).toMatch(/try again/i);
+  });
+
+  it("backs off after a 429 instead of retrying on every poll", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(3_000_000);
+    proxyAwareFetch.mockResolvedValueOnce(new Response("blocked", { status: 429 }));
+
+    const first = await getTavilyUsage("tvly-backoff");
+    expect(first.message).toMatch(/rate-limited/i);
+
+    // The next 60s poll must not touch the endpoint while the block is warm.
+    now.mockReturnValue(3_000_000 + 60_000);
+    const second = await getTavilyUsage("tvly-backoff");
+    expect(proxyAwareFetch).toHaveBeenCalledTimes(1);
+    expect(second.message).toMatch(/rate-limited/i);
+
+    // Once the backoff expires it asks again, and recovers on success.
+    now.mockReturnValue(3_000_000 + 121_000);
+    proxyAwareFetch.mockResolvedValueOnce(jsonResponse({
+      key: { usage: 9, limit: 1000 },
+      account: { current_plan: "Bootstrap", plan_usage: 9, plan_limit: 4000 },
+    }));
+    const third = await getTavilyUsage("tvly-backoff");
+    expect(proxyAwareFetch).toHaveBeenCalledTimes(2);
+    expect(third.quotas["This key"]).toMatchObject({ used: 9, total: 1000 });
+    now.mockRestore();
+  });
+
+  it("lets a manual refresh through, but not more than once a minute", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(2_000_000);
+    proxyAwareFetch.mockResolvedValue(jsonResponse({
+      key: { usage: 7, limit: 1000 },
+      account: { current_plan: "Bootstrap", plan_usage: 7, plan_limit: 4000 },
+    }));
+
+    await getTavilyUsage("tvly-force");
+    now.mockReturnValue(2_000_000 + 30_000);
+    await getTavilyUsage("tvly-force", null, { force: true });
+    expect(proxyAwareFetch).toHaveBeenCalledTimes(1);
+
+    now.mockReturnValue(2_000_000 + 61_000);
+    await getTavilyUsage("tvly-force", null, { force: true });
+    expect(proxyAwareFetch).toHaveBeenCalledTimes(2);
+    now.mockRestore();
   });
 });
 
