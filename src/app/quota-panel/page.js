@@ -405,6 +405,49 @@ export default function QuotaPanelPage() {
     if (isDesktop()) emitDesktop("panel-ready");
   }, []);
 
+  // The popover window outlives its openings, so the palette it booted with
+  // would stick even after the dashboard switches theme. Re-apply the stored
+  // theme whenever the shell reveals it (and whenever the OS scheme changes).
+  useEffect(() => {
+    const applyStoredTheme = () => {
+      let theme = "system";
+      try {
+        const raw = window.localStorage.getItem("theme");
+        if (raw) theme = JSON.parse(raw)?.state?.theme || "system";
+      } catch {
+        // Corrupt payload: fall back to the system scheme.
+      }
+      const media = window.matchMedia("(prefers-color-scheme: dark)");
+      const dark = theme === "dark" || (theme === "system" && media.matches);
+      document.documentElement.classList.toggle("dark", dark);
+    };
+
+    applyStoredTheme();
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    media.addEventListener("change", applyStoredTheme);
+    // Same-origin windows share localStorage; the event may not cross webviews.
+    const onStorage = (event) => {
+      if (!event.key || event.key === "theme") applyStoredTheme();
+    };
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", applyStoredTheme);
+
+    let unlisten;
+    let cancelled = false;
+    listenDesktop("panel-shown", applyStoredTheme).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+      media.removeEventListener("change", applyStoredTheme);
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("focus", applyStoredTheme);
+    };
+  }, []);
+
   // Refresh every time the shell reveals the popover.
   useEffect(() => {
     let unlisten;
