@@ -26,6 +26,19 @@ const TRAY_TOGGLE_GUARD_MS: i64 = 300;
 static TRAY_TOGGLE_AT_MS: AtomicI64 = AtomicI64::new(0);
 static READY_LISTENER: AtomicI64 = AtomicI64::new(0);
 
+/// Reveal the popover. Re-asserts the window chrome every time: macOS
+/// re-enables the native window shadow when a window becomes key, and the
+/// shadow is computed from the whole window rect — it shows up as a square
+/// halo around our rounded card. The page paints its own CSS shadow instead.
+fn reveal(win: &tauri::WebviewWindow) {
+    let _ = win.set_shadow(false);
+    // Clear window background so no opaque rect shows through the rounded
+    // corners (harmless no-op where unsupported).
+    let _ = win.set_background_color(Some(tauri::webview::Color(0, 0, 0, 0)));
+    let _ = win.show();
+    let _ = win.set_focus();
+}
+
 /// Listen for "panel-ready" (emitted by the page once React has mounted) and
 /// reveal the popover at that moment — the first thing the user sees is the
 /// styled card with its loading state, never a blank frame. Registered once.
@@ -42,8 +55,7 @@ fn ensure_ready_listener(app: &AppHandle) {
             boot_log("panel: page ready - revealing");
             // The page DOM is mounted by now — safe to inject the init JS.
             let _ = w.eval(PAGE_INIT_JS);
-            let _ = w.show();
-            let _ = w.set_focus();
+            reveal(&w);
             let _ = app2.emit_to(PANEL_LABEL, "panel-shown", ());
             emit_state(&app2);
         }
@@ -229,8 +241,7 @@ pub(crate) fn toggle_panel(app: &AppHandle, icon_rect: Option<tauri::Rect>) {
         if let Some((x, y)) = position {
             let _ = win.set_position(tauri::LogicalPosition::new(x, y));
         }
-        let _ = win.show();
-        let _ = win.set_focus();
+        reveal(&win);
         let _ = app.emit_to(PANEL_LABEL, "panel-shown", ());
         emit_state(app);
         return;
@@ -296,8 +307,7 @@ pub(crate) fn toggle_panel(app: &AppHandle, icon_rect: Option<tauri::Rect>) {
         if let Some(w) = app2.get_webview_window(PANEL_LABEL) {
             if !w.is_visible().unwrap_or(true) {
                 boot_log("panel: ready timeout - revealing placeholder");
-                let _ = w.show();
-                let _ = w.set_focus();
+                reveal(&w);
                 let _ = app2.emit_to(PANEL_LABEL, "panel-shown", ());
                 emit_state(&app2);
             }

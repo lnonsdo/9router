@@ -531,8 +531,8 @@ export default function QuotaPanelPage() {
         (contentRef.current?.offsetHeight || 0) +
         (logRef.current?.offsetHeight || 0) +
         (footerRef.current?.offsetHeight || 0) +
-        // scroll-area vertical padding (24) + card ring (2) + page padding (16)
-        42;
+        // scroll-area vertical padding (24) + card ring (2) + page padding (20)
+        46;
       const clamped = Math.max(PANEL_MIN_HEIGHT, Math.min(PANEL_MAX_HEIGHT, natural));
       if (Math.abs(clamped - lastSentHeight.current) < 2) return;
       lastSentHeight.current = clamped;
@@ -559,8 +559,8 @@ export default function QuotaPanelPage() {
           __html: "html, body { background: transparent !important; overflow: hidden; }",
         }}
       />
-      <div className="w-full p-2">
-        <div className="flex max-h-[calc(100vh-16px)] flex-col overflow-hidden rounded-2xl bg-bg shadow-[0_12px_36px_rgba(0,0,0,0.35)] ring-1 ring-black/10 dark:ring-white/10">
+      <div className="w-full p-2.5">
+        <div className="flex max-h-[calc(100vh-20px)] flex-col overflow-hidden rounded-2xl bg-bg ring-1 ring-black/[0.06] dark:ring-white/10 [box-shadow:0_3px_10px_-2px_rgba(0,0,0,0.20),0_1px_3px_-1px_rgba(0,0,0,0.10)]">
           {/* Header */}
           <div
             ref={headerRef}
