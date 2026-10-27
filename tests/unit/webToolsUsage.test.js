@@ -32,6 +32,7 @@ import {
   summarizeVolume,
   snapshotMatchesConnection,
   volumeCoversCurrentMonth,
+  readExaLoginStatus,
   exaSnapshotDir,
   EXA_FREE_MONTHLY_CREDITS_USD,
 } from "../../open-sse/services/usage/exa.js";
@@ -434,6 +435,38 @@ describe("Exa dashboard snapshot (desktop sync)", () => {
     expect(result.meta.source).toBe("dashboard-sync");
     expect(result.quotas["Credits balance"].total).toBe(19.49);
     expect(getProviderSpend).not.toHaveBeenCalled();
+  });
+
+  it("says the sign-in expired when the shell left a status file", async () => {
+    const snapshotDir = exaSnapshotDir();
+    fs.mkdirSync(snapshotDir, { recursive: true });
+    fs.writeFileSync(path.join(snapshotDir, "conn-status.json"), JSON.stringify(snapshot));
+    fs.writeFileSync(
+      path.join(snapshotDir, "conn-status.status.json"),
+      JSON.stringify({ needsLogin: true, at: 1_793_000_000 }),
+    );
+
+    expect(readExaLoginStatus("conn-status")).toMatchObject({ needsLogin: true });
+
+    const result = await getExaUsage({ id: "conn-status", providerSpecificData: {} });
+
+    // The numbers are still the last good snapshot; the note explains why they
+    // did not move.
+    expect(result.meta.source).toBe("dashboard-sync");
+    expect(result.message).toMatch(/sign-in expired/i);
+    expect(result.message).toMatch(/press refresh/i);
+  });
+
+  it("ignores a status file that does not ask for a login", () => {
+    const snapshotDir = exaSnapshotDir();
+    fs.mkdirSync(snapshotDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(snapshotDir, "conn-ok.status.json"),
+      JSON.stringify({ needsLogin: false }),
+    );
+
+    expect(readExaLoginStatus("conn-ok")).toBeNull();
+    expect(readExaLoginStatus("nothing-here")).toBeNull();
   });
 
   it("rejects a snapshot belonging to another Exa account", async () => {

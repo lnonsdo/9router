@@ -62,6 +62,7 @@ pub(crate) const EXA_SYNC_JS_TEMPLATE: &str = r#"
   var AUTO = "__AUTO__" === "1";
   var sent = false;
   var tries = 0;
+  var busy = false;
   var banner = null;
 
   // The volume/keys endpoints take undocumented params (teamId + date range),
@@ -122,7 +123,9 @@ pub(crate) const EXA_SYNC_JS_TEMPLATE: &str = r#"
       if (!headers["content-type"]) headers["content-type"] = "application/json";
       opts.body = req.body;
     }
-    return fetch(req.url, opts)
+    // A hidden webview can leave a request pending forever (bot challenge,
+    // throttled timers). Without a cap the sync would neither finish nor abort.
+    return withTimeout(fetch(req.url, opts)
       .then(function (r) {
         attempts.push({ url: req.url, method: opts.method, status: r.status });
         return r.ok ? r.json() : null;
@@ -130,7 +133,30 @@ pub(crate) const EXA_SYNC_JS_TEMPLATE: &str = r#"
       .catch(function () {
         attempts.push({ url: req.url, method: opts.method, status: "error" });
         return null;
+      }), 12000);
+  }
+
+  function withTimeout(promise, ms) {
+    return new Promise(function (resolve) {
+      var settled = false;
+      var timer = setTimeout(function () {
+        if (settled) return;
+        settled = true;
+        try { attempts.push({ url: "timeout", method: "-", status: "timeout" }); } catch (e) {}
+        resolve(null);
+      }, ms);
+      promise.then(function (value) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      }, function () {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(null);
       });
+    });
   }
 
   function getJSON(url) {
@@ -206,25 +232,42 @@ pub(crate) const EXA_SYNC_JS_TEMPLATE: &str = r#"
     banner = null;
   }
 
-  // Auto-sync windows are hidden; if nothing comes back after ~36s, tell Rust
-  // to close the window instead of leaving an invisible webview behind.
+  // Nothing usable came back: tell Rust. A background sync is closed silently;
+  // a user-started one is revealed so the login page / banner is visible.
   function abort() {
     sent = true;
     try {
       window.__TAURI_INTERNALS__.invoke("plugin:event|emit", {
         event: "exa-sync-abort",
-        payload: { connectionId: CONNECTION_ID }
+        payload: { connectionId: CONNECTION_ID, auto: AUTO }
+      });
+    } catch (e) {}
+  }
+
+  // The tauri-boot.log trail: without it a wedged hidden webview looks exactly
+  // like one that never ran.
+  function progress(phase) {
+    try {
+      window.__TAURI_INTERNALS__.invoke("plugin:event|emit", {
+        event: "exa-sync-progress",
+        payload: { connectionId: CONNECTION_ID, phase: phase, tries: tries }
       });
     } catch (e) {}
   }
 
   function tick() {
-    if (sent) return;
+    if (sent || busy) return;
+    busy = true;
     tries += 1;
     getJSON("/api/get-credits").then(function (credits) {
-      // Not logged in yet — the login page also answers, just without credits.
+      // Not logged in: this endpoint answers with a redirect/empty body instead
+      // of credits. A valid session answers on the first try, so stop right
+      // away rather than retrying for minutes behind a hidden window (WebKit
+      // throttles this page's timers, so each retry can take ~25s).
       if (!credits || typeof credits.orbCreditsInCents !== "number") {
-        if (AUTO && tries >= 12) abort();
+        progress("no-credits");
+        abort();
+        busy = false;
         return;
       }
 
@@ -242,12 +285,15 @@ pub(crate) const EXA_SYNC_JS_TEMPLATE: &str = r#"
             });
             if (!owns) {
               showBanner("当前登录的 Exa 账户不拥有这个连接使用的 API Key。请在此页面切换到对应账户，检测到匹配后会自动完成同步。");
-              if (AUTO && tries >= 12) abort();
+              progress("wrong-account");
+              if (tries >= 6) abort();
+              busy = false;
               return;
             }
           }
           clearBanner();
           sent = true;
+          progress("done");
 
           return window.__TAURI_INTERNALS__.invoke("plugin:event|emit", {
             event: "exa-sync-result",
@@ -261,11 +307,12 @@ pub(crate) const EXA_SYNC_JS_TEMPLATE: &str = r#"
               syncedAt: new Date().toISOString()
             }
           });
-        }).catch(function () { sent = false; });
-      });
-    });
+        }).catch(function () { sent = false; busy = false; });
+      }, function () { busy = false; });
+    }, function () { busy = false; });
   }
 
+  progress("start");
   // Run immediately: hidden auto-sync windows may have their timers throttled.
   tick();
   setInterval(tick, 3000);

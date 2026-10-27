@@ -287,6 +287,25 @@ export function buildSyncedUsage(snapshot, { grantUsd = EXA_FREE_MONTHLY_CREDITS
 }
 
 /**
+ * The desktop shell drops `<id>.status.json` beside the snapshot when a silent
+ * sync found Exa's session gone, so the card can say so in plain text instead
+ * of only reacting to a hover. A successful sync deletes the file.
+ */
+export function readExaLoginStatus(connectionId, dir = exaSnapshotDir()) {
+  if (!connectionId) return null;
+  const safe = String(connectionId).replace(/[^A-Za-z0-9_-]/g, "");
+  if (!safe) return null;
+  try {
+    const parsed = JSON.parse(
+      fs.readFileSync(path.join(dir, `${safe}.status.json`), "utf8"),
+    );
+    return parsed && parsed.needsLogin === true ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * @param {object} connection Provider connection (needs id + providerSpecificData)
  */
 export async function getExaUsage(connection) {
@@ -306,7 +325,19 @@ export async function getExaUsage(connection) {
       mismatchNote = `Last Exa sync was for ${account.teamName || "another Exa account"}, which does not own this connection's API key. Re-sync while logged into the matching account.`;
     } else {
       const synced = buildSyncedUsage(snapshot, { grantUsd });
-      if (synced) return synced;
+      if (synced) {
+        const loginStatus = readExaLoginStatus(connectionId);
+        if (loginStatus) {
+          return {
+            ...synced,
+            message: `${synced.message} · Exa sign-in expired, so the last sync could not refresh — press refresh and sign in`,
+            // The card uses this to send the next refresh through the visible
+            // login window instead of another doomed silent attempt.
+            meta: { ...synced.meta, needsLogin: true },
+          };
+        }
+        return synced;
+      }
     }
   }
 

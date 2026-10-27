@@ -355,11 +355,32 @@ appear as cards on `/dashboard/quota`.
     rejected again server-side by `snapshotMatchesConnection`, so one account's team-level
     balance can never land on another account's card. The card names the team the snapshot
     came from.
-    Refresh is automatic: opening `/dashboard/quota` syncs any snapshot older than 30 minutes
-    in a **hidden** webview (`.visible(false)`), which closes itself as soon as it reports. If
-    the Exa session has expired, the hidden window surfaces the login page instead. The card's
-    normal refresh button also forces a real sync for Exa (a plain re-fetch would only replay
-    the cached snapshot).
+    Refresh is automatic and silent: opening `/dashboard/quota` syncs any snapshot older than
+    30 minutes in a webview created with `visible(false)` and `focused(false)` (tao only orders a
+    window front when it is created visible, so nothing appears and nothing needs hiding —
+    calling `hide()` right after build put WKWebView to sleep and the page never loaded).
+    Each request the script makes has a 12s timeout, and a `get-credits` reply without
+    credits (i.e. not signed in) aborts on the first try instead of retrying behind a hidden
+    window; a hidden window still alive after 180s is closed by a watchdog. Every step is logged to
+    `~/.9router/tauri-boot.log` (`exa-sync: start / no-credits / wrong-account / done`, plus
+    each page load) because a silent webview is otherwise a black box.
+    The dashboard session survives on its own: after a successful sync the webview's
+    `dashboard.exa.ai` cookies are copied to `<DATA_DIR>/exa-sync/<id>.cookies.json` (0600), and
+    the next sync window starts on `about:blank`, pours that jar in through
+    `Webview::set_cookie` (WKHTTPCookieStore — works for HttpOnly session cookies, which
+    `document.cookie` cannot set), and only then navigates. That keeps syncs silent even when
+    WKWebView drops its own cookie store; an auth rejection deletes the jar so a dead one is
+    not re-injected forever. (A plain HTTP client cannot replace the webview: Vercel's bot
+    challenge answers 429 to non-browser requests even with a valid session cookie.)
+    Signing in inside the webview is painful (no password manager, no Google SSO), so the Exa
+    connection's edit dialog accepts a pasted `next-auth.session-token` (value or `name=value`)
+    stored as `providerSpecificData.exaSessionCookie`; the shell uses it only when no cookiejar
+    has been saved yet. Copy it from the browser's DevTools once, then refreshes stay silent.
+    A sync that cannot authenticate closes rather than shows, writes
+    `<id>.status.json` next to the snapshot and emits `exa-sync-needs-login`, so the card says
+    "Exa sign-in expired … press refresh and sign in" in plain text; that refresh starts a
+    non-silent sync, which is the only case where the login window appears. The refresh button
+    also forces a real sync for Exa (a plain re-fetch would only replay the cached snapshot).
   - *Local estimate (fallback)* — sums this month's locally recorded `costDollars.total`
     against the $10 monthly free grant; `providerSpecificData.exaMonthlyBudgetUsd` overrides
     the ceiling. Labelled "Exa (estimated)" and says explicitly that MCP/dashboard traffic is

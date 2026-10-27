@@ -24,6 +24,8 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
   const [cloudflareData, setCloudflareData] = useState({ accountId: "" });
   // Open Design: console session cookie powers balance / plan usage on /quota.
   const [openDesignData, setOpenDesignData] = useState({ sessionCookie: "", workspaceId: "" });
+  // Exa: dashboard session cookie lets the desktop sync skip the in-app login.
+  const [exaData, setExaData] = useState({ sessionCookie: "" });
   const [awsData, setAwsData] = useState({ profile: "", region: "", accessKeyId: "", sessionToken: "" });
   const [clearAwsSessionToken, setClearAwsSessionToken] = useState(false);
   // Volcengine SSO: long-lived IAM AK/SK binding (removes 2-day re-auth pain)
@@ -53,6 +55,10 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
       }
       if (connection.provider === "cloudflare-ai" && connection.providerSpecificData) {
         setCloudflareData({ accountId: connection.providerSpecificData.accountId || "" });
+      }
+      if (connection.provider === "exa") {
+        // The cookie is a secret — never prefill it; blank keeps the saved value.
+        setExaData({ sessionCookie: "" });
       }
       if (connection.provider === "open-design") {
         const psd = connection.providerSpecificData || {};
@@ -207,6 +213,11 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
       if (isCloudflareAi) {
         updates.providerSpecificData = { accountId: cloudflareData.accountId };
       }
+      if (connection.provider === "exa") {
+        const cookie = exaData.sessionCookie.trim();
+        // Blank keeps the stored cookie (the server merges providerSpecificData).
+        if (cookie) updates.providerSpecificData = { exaSessionCookie: cookie };
+      }
       if (connection.provider === "open-design") {
         const cookie = openDesignData.sessionCookie.trim();
         const workspaceId = openDesignData.workspaceId.trim();
@@ -293,6 +304,32 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
               </Badge>
             )}
           </>
+        )}
+
+        {connection.provider === "exa" && (
+          <div className="flex flex-col gap-3 rounded-lg border border-black/10 p-3 dark:border-white/10">
+            <p className="text-xs text-text-muted">
+              Quota Tracker 里的余额来自 Exa 控制台会话。应用内窗口没有密码管理器和 Google
+              快捷登录，所以不必在里面登录：在浏览器打开
+              <a href="https://dashboard.exa.ai/billing" target="_blank" rel="noreferrer" className="text-primary hover:underline">
+                Exa 控制台
+              </a>
+              后，从 DevTools → Application → Cookies 复制
+              <code> next-auth.session-token </code>
+              的值粘贴到下方（也可以直接粘贴 <code>name=value</code>）。保存后点刷新就会静默同步。
+            </p>
+            <Input
+              label="Dashboard session cookie"
+              type="password"
+              value={exaData.sessionCookie}
+              onChange={(e) => setExaData({ ...exaData, sessionCookie: e.target.value })}
+              placeholder="next-auth.session-token 的值，或 name=value"
+            />
+            <p className="text-[10px] text-text-muted">
+              留空则保留已保存的 Cookie；会话过期后重新粘贴即可。应用成功同步后也会自动记住最新
+              Cookie，之后的刷新不需要再登录。
+            </p>
+          </div>
         )}
 
         {connection.provider === "open-design" && (

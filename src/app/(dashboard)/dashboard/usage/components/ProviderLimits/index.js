@@ -578,7 +578,7 @@ export default function ProviderLimits() {
 
   // Exa desktop sync (dashboard scrape + snapshot refresh) lives in the
   // desktop service layer to keep this file's upstream delta minimal.
-  const { isTauri, handleExaSync } = useExaDesktopSync({
+  const { isTauri, handleExaSync, needsLogin: exaNeedsLogin } = useExaDesktopSync({
     connections,
     quotaData,
     refreshProvider,
@@ -1313,7 +1313,9 @@ export default function ProviderLimits() {
                     <Tooltip
                       text={
                         isTauri && conn.provider === "exa"
-                          ? "Refresh quota (re-syncs the Exa dashboard balance)"
+                          ? exaNeedsLogin.has(conn.id)
+                            ? "Refresh quota (Exa needs a sign-in — opens the login window)"
+                            : "Refresh quota (re-syncs the Exa dashboard balance silently)"
                           : "Refresh quota"
                       }
                     >
@@ -1322,9 +1324,11 @@ export default function ProviderLimits() {
                         onClick={() => {
                           // Exa's real numbers only move when we re-read the
                           // dashboard; a plain re-fetch would just replay the
-                          // cached snapshot and look like a no-op.
+                          // cached snapshot and look like a no-op. A silent sync
+                          // when the session is known to be dead would just be
+                          // closed again, so that one shows the login window.
                           if (isTauri && conn.provider === "exa") {
-                            handleExaSync(conn.id, { auto: true });
+                            handleExaSync(conn.id, { auto: !exaNeedsLogin.has(conn.id) });
                           }
                           refreshProvider(conn.id, conn.provider);
                         }}
