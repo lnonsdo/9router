@@ -1,7 +1,7 @@
 export default {
   id: "qoder",
   priority: 30,
-  alias: "qd",
+  alias: "qoder",
   aliases: [
     "qd",
   ],
@@ -38,7 +38,7 @@ export default {
     { id: "qmodel_latest", name: "Qwen3.7-Max" },
     { id: "qmodel", name: "Qwen3.7-Plus" },
     { id: "qfmodel", name: "Qwen3.8-Flash" },
-    { id: "kmodel_latest", name: "Kimi-K3" },
+    { id: "kmodel_latest", name: "Kimi-K3.1-Pro" },
     { id: "kmodel", name: "Kimi-K2.7-Code" },
     { id: "gmodel", name: "GLM-5.3" },
     { id: "gfmodel", name: "GLM-5.3-Flash" },

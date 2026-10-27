@@ -60,6 +60,7 @@ export default {
     { id: "glm-5.3-flash", name: "GLM-5.3 Flash" },
     { id: "kimi-k2.7-code", name: "Kimi K2.7 Code" },
     { id: "kimi-k3", name: "Kimi K3" },
+    { id: "kimi-k3.1-pro", name: "Kimi K3.1 Pro" },
     { id: "deepseek-v4-pro", name: "DeepSeek V4 Pro" },
     { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" },
     { id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash" },
