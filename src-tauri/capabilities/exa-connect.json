@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "exa-connect",
-  "description": "Exa dashboard window: the injected sync script may only emit the result event back to the shell.",
-  "windows": ["exa-connect-*"],
+  "description": "Exa dashboard windows (hidden sync + visible sign-in): the injected sync script may only emit events back to the shell.",
+  "windows": ["exa-connect-*", "exa-login-*"],
   "remote": {
     "urls": ["https://dashboard.exa.ai/*"]
   },

@@ -202,12 +202,19 @@ Native support is a **per-wire** question, not a per-provider one:
     `web_fetch_tool_result.content` is a `web_fetch_result` document
     (`source: { type:"text", media_type:"text/plain", data }`), and failures use
     `web_search_tool_result_error` / `web_fetch_tool_result_error` with `error_code`.
-  - Search excerpts are built for the model, not copied from `snippet`: up to 800 chars per
+  - Search excerpts are built for the model, not copied from `snippet`: up to 1200 chars per
     result. When the provider's `snippet` is shorter than 400 chars (Exa returns a single
     relevance-picked highlight) the provider's extracted page text (`content.text`) is appended,
     so the model can actually judge the result. The same excerpt is stored on the result block,
     so a replayed turn keeps it instead of falling back to a one-line teaser. Cost: 8 results ×
-    800 chars ≈ 1.6k tokens per search round.
+    1200 chars ≈ 2.4k tokens per search round.
+  - Provider results must actually carry text. Exa's search endpoint silently ignores the
+    legacy top-level `text`/`highlights` flags (it now expects
+    `contents: { text: { maxCharacters }, highlights: { numSentences } }`), so an "ok" Exa
+    search used to return id/title/url only. Because Exa was first in the pool, Tavily was never
+    tried and the model saw titles and URLs with no snippets. The bridge now treats a non-empty
+    result set with no `snippet`/`content.text` as a soft failure, keeps it as a last resort and
+    tries the next provider. (An empty result set is still a valid answer.)
   - Replayed history blocks are downgraded to a plain tool loop per turn: Claude
     `server_tool_use` / `*_tool_result` blocks, and Responses `web_search_call` items
     (turned into an assistant text item). `srvtoolu_` ids are rewritten to `toolu_` so strict
@@ -355,32 +362,64 @@ appear as cards on `/dashboard/quota`.
     rejected again server-side by `snapshotMatchesConnection`, so one account's team-level
     balance can never land on another account's card. The card names the team the snapshot
     came from.
-    Refresh is automatic and silent: opening `/dashboard/quota` syncs any snapshot older than
-    30 minutes in a webview created with `visible(false)` and `focused(false)` (tao only orders a
-    window front when it is created visible, so nothing appears and nothing needs hiding —
-    calling `hide()` right after build put WKWebView to sleep and the page never loaded).
-    Each request the script makes has a 12s timeout, and a `get-credits` reply without
-    credits (i.e. not signed in) aborts on the first try instead of retrying behind a hidden
-    window; a hidden window still alive after 180s is closed by a watchdog. Every step is logged to
-    `~/.9router/tauri-boot.log` (`exa-sync: start / no-credits / wrong-account / done`, plus
-    each page load) because a silent webview is otherwise a black box.
-    The dashboard session survives on its own: after a successful sync the webview's
-    `dashboard.exa.ai` cookies are copied to `<DATA_DIR>/exa-sync/<id>.cookies.json` (0600), and
-    the next sync window starts on `about:blank`, pours that jar in through
-    `Webview::set_cookie` (WKHTTPCookieStore — works for HttpOnly session cookies, which
-    `document.cookie` cannot set), and only then navigates. That keeps syncs silent even when
-    WKWebView drops its own cookie store; an auth rejection deletes the jar so a dead one is
-    not re-injected forever. (A plain HTTP client cannot replace the webview: Vercel's bot
-    challenge answers 429 to non-browser requests even with a valid session cookie.)
+    Refresh is automatic and silent: opening `/dashboard/quota` (or the tray usage panel)
+    syncs any snapshot older than 30 minutes in a webview that the user cannot see. "Hidden"
+    has to mean *transparent*, not *ordered out*: a window created `visible(false)` is
+    off-screen, and WKWebView throttles its page (measured on macOS: 1s timers drift to ~2.4s)
+    and drops subsequent `eval`s, so the injected script fires its first request and then goes
+    quiet — the old sync stalled right after `start` with the snapshot never updated. The sync
+    window is therefore created hidden, then given `alphaValue = 0` +
+    `ignoresMouseEvents = true` and ordered front (`orderFrontRegardless`, without becoming
+    key): on screen as far as AppKit and WebKit are concerned (`occlusionState` stays visible,
+    timers run at full speed), but invisible and click-through. `exa-*` windows are also
+    filtered out of `tauri-plugin-window-state` (`with_filter` in `main.rs`): that plugin
+    restores state for every new window and its restore path ends in `show() + set_focus()`
+    with `should_show` defaulting to `true`, so it silently overrode the hidden window and made
+    each "silent" refresh pop up for the few seconds the sync took.
+    Each request the script makes has a 12s timeout, and a timeout is not a signed-out
+    session: `get-credits` answering with a redirect/HTML means auth is dead, while a timeout
+    only means the hidden webview's timers were throttled (one retry, no verdict) —
+    conflating the two used to mark a working connection as expired after a slow sync. Every
+    step is logged to `~/.9router/tauri-boot.log` (`exa-sync: start / credits-timeout /
+    no-credits:<status> / wrong-account / done`, plus each page load) because a silent webview
+    is otherwise a black box; a hidden window still alive after 180s is closed by a watchdog.
+    The dashboard session survives on its own: WKWebView's website data store is persistent, so
+    the login made once in the app's webview keeps working across syncs and app restarts. An
+    earlier version copied the webview's cookies to `<DATA_DIR>/exa-sync/<id>.cookies.json` and
+    poured them back in before every sync; that was the bug, not the fix — the copy went stale
+    while the live jar kept rotating, so the injected host-only `next-auth.session-token` sat
+    next to the dashboard's own `Domain=.exa.ai` one and NextAuth read the stale value first
+    (the sync then saw an HTML challenge page and looked signed out, which is why it kept
+    "expiring"). The jar (and its `cf_clearance` / `__Host-` CSRF cookies) is gone; nothing is
+    injected unless the user pasted a cookie. (A plain HTTP client cannot replace the webview:
+    Vercel's bot challenge answers 429 to non-browser requests even with a valid session
+    cookie.)
     Signing in inside the webview is painful (no password manager, no Google SSO), so the Exa
     connection's edit dialog accepts a pasted `next-auth.session-token` (value or `name=value`)
-    stored as `providerSpecificData.exaSessionCookie`; the shell uses it only when no cookiejar
-    has been saved yet. Copy it from the browser's DevTools once, then refreshes stay silent.
-    A sync that cannot authenticate closes rather than shows, writes
+    stored as `providerSpecificData.exaSessionCookie`. It is the bootstrap for a webview that
+    has no session at all: poured in through `Webview::set_cookie` (WKHTTPCookieStore — works
+    for HttpOnly cookies, which `document.cookie` cannot set) after deleting same-name cookies,
+    so the pasted value cannot end up side by side with an older one. Copy it from the
+    browser's DevTools once, then refreshes stay silent.
+    A sync that cannot authenticate never reveals its hidden window: it closes, writes
     `<id>.status.json` next to the snapshot and emits `exa-sync-needs-login`, so the card says
-    "Exa sign-in expired … press refresh and sign in" in plain text; that refresh starts a
-    non-silent sync, which is the only case where the login window appears. The refresh button
-    also forces a real sync for Exa (a plain re-fetch would only replay the cached snapshot).
+    "Exa sign-in expired … press refresh to sign in, or paste a dashboard cookie" in plain
+    text. Only when that failure belongs to a refresh the user just started does the shell ask
+    for a *sign-in window* (`exa-login-<id>`, a separate label so the `exa-connect-*` capability
+    and window checks stay untouched), created `visible(true)`/`focused(true)` from the first
+    frame and navigated normally: a window built hidden and shown later does not repaint
+    reliably in WKWebView (it looks frozen on whatever page it loaded and ignores input). That
+    window never aborts — it banners what to do, keeps polling every 3s and closes itself the
+    moment the session becomes valid, so a sign-in (or an account switch) completes the sync.
+    The same replacement happens when a silent manual sync bounces to `auth.exa.ai`. Every
+    refresh starts silent, even on a connection flagged as expired: the flag can be stale, and
+    a visible window is only worth it once a silent read has actually failed. The refresh
+    button (and the tray panel's) also forces a real sync for Exa: a plain re-fetch would only
+    replay the cached snapshot. While the webview works the card shows its normal loading state
+    (`useExaDesktopSync` returns the ids in flight), so a click never looks like a no-op, and
+    `exa-sync-done` re-reads every provider (the full page) instead of just that card.
+    `exa-sync-done` and `exa-sync-needs-login` are broadcast to every window so the tray panel —
+    which mounts the same `useExaDesktopSync` hook — refreshes too.
   - *Local estimate (fallback)* — sums this month's locally recorded `costDollars.total`
     against the $10 monthly free grant; `providerSpecificData.exaMonthlyBudgetUsd` overrides
     the ceiling. Labelled "Exa (estimated)" and says explicitly that MCP/dashboard traffic is
@@ -439,6 +478,7 @@ conflicts, these are the only anchors to re-apply:
 |---|---|---|
 | `open-sse/handlers/chatCore.js` | ~80 lines | `handleChatCore` signature (`webToolsAdapter`, `executeServerTool` params); plan block right after the modality prefetch; `injectEmulatedTools` right after `dedupeTools`; the `if (emuPlan)` branch right after `sharedCtx`; the web-tool access-error fallback inside `if (!providerResponse.ok)` |
 | `open-sse/handlers/search/index.js` | 4 lines | `provider_cost_usd` (from `costDollars.total`) added to the `usage` envelope — nothing else; recording lives in the fork wrapper |
+| `open-sse/handlers/search/callers.js` | ~12 lines | `buildExaRequest` uses `contents: { text: { maxCharacters: 4000 }, highlights: { numSentences: 2 } }`; the legacy top-level `text`/`highlights` are ignored by Exa and return metadata-only results |
 | `open-sse/handlers/fetch/index.js` | ~10 lines | `providerCostUsd` param in `buildData`; Exa passes `json.costDollars.total` |
 | `src/lib/db/repos/usageRepo.js` | 2 lines | `saveRequestUsage` keeps an explicitly supplied `cost` instead of always recalculating it |
 | `src/sse/handlers/search.js`, `src/sse/handlers/fetch.js` | ~4 lines each | import `handleSearchCore` / `handleFetchCore` from `open-sse/services/webToolUsage.js` (fork wrapper) and pass `clientApiKey: apiKey` |

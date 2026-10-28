@@ -58,8 +58,17 @@ fn main() {
         }))
         // Remember window position and size across launches. The usage panel
         // is excluded: it is anchored to the tray icon on every open.
+        //
+        // Every `exa-*` window is excluded as well, and that is load-bearing:
+        // the plugin restores state for each new window it sees, and its
+        // restore path ends in `show() + set_focus()` (`should_show` starts as
+        // true), so it silently overrode `.visible(false)` on the Exa sync
+        // window — a "silent" refresh popped a window up for a few seconds
+        // every time. Its labels carry a connection UUID, hence the filter
+        // instead of `with_denylist`.
         .plugin(
             tauri_plugin_window_state::Builder::default()
+                .with_filter(|label| !label.starts_with("exa-"))
                 .with_denylist(&[PANEL_LABEL])
                 .build(),
         )

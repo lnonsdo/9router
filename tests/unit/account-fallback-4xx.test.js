@@ -57,3 +57,17 @@ describe("checkFallbackError — request-scoped vs account-scoped failures", () 
     expect(result.cooldownMs).toBeGreaterThan(0);
   });
 });
+
+describe("checkFallbackError — concurrency caps (z.ai 3009)", () => {
+  it("gives 'model concurrency limit exceeded' a 5s cooldown instead of 429 backoff", () => {
+    const result = checkFallbackError(429, JSON.stringify({
+      code: 3009,
+      msg: "model concurrency limit exceeded",
+      logid: "2026102716190230f5ee80ea5ad6ac9625",
+    }));
+
+    // concurrency clears the moment an in-flight request finishes — 5s, not the
+    // 429 exponential backoff that maxes at 5 minutes
+    expect(result).toEqual({ shouldFallback: true, cooldownMs: 5000 });
+  });
+});

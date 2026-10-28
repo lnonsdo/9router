@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchConnections, fetchQuotaEntry } from "@/shared/services/quotaClient";
 import { emitDesktop, isDesktop, listenDesktop } from "@/shared/services/desktop";
+import { useExaDesktopSync } from "@/shared/services/desktop/exaSync";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
 import Toggle from "@/shared/components/Toggle";
 import {
@@ -383,6 +384,18 @@ export default function QuotaPanelPage() {
     }
   }, []);
 
+  // Exa's balance only moves after the dashboard is re-read from a real
+  // browser context (hidden webview in the shell). Reuse the tracker's hook so
+  // the panel's own polls pick up a fresh snapshot: a stale Exa entry triggers
+  // one throttled silent sync, and an explicit refresh click forces one.
+  const refreshPanel = useCallback(() => loadAll({ force: true, quiet: true }), [loadAll]);
+  const { syncNow: syncExaNow, syncing: exaSyncing } = useExaDesktopSync({
+    connections,
+    quotaData: quotaById,
+    refreshProvider: refreshPanel,
+    refreshAll: refreshPanel,
+  });
+
   // Initial load: cache-first for an instant paint (the panel-shown handler
   // below force-refreshes right after, since Rust also emits it on first open).
   useEffect(() => {
@@ -618,13 +631,20 @@ export default function QuotaPanelPage() {
               ) : null}
               <button
                 type="button"
-                onClick={() => loadAll({ force: true })}
+                onClick={() => {
+                  // Force the providers that can only be read from a browser
+                  // context (Exa) before re-reading the snapshots.
+                  syncExaNow();
+                  loadAll({ force: true });
+                }}
                 disabled={refreshing}
                 aria-label="Refresh usage"
                 className="flex h-6 w-6 items-center justify-center rounded-md transition-colors hover:bg-black/5 dark:hover:bg-white/5"
               >
                 <span
-                  className={`material-symbols-outlined text-text-muted ${refreshing ? "animate-spin" : ""}`}
+                  className={`material-symbols-outlined text-text-muted ${
+                    refreshing || exaSyncing.size > 0 ? "animate-spin" : ""
+                  }`}
                   style={{ fontSize: 15 }}
                 >
                   refresh

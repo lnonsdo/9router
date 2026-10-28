@@ -156,8 +156,15 @@ function buildExaRequest(config, params) {
     query: params.query,
     numResults: params.maxResults,
     type: "auto",
-    text: true,
-    highlights: true,
+    // Exa moved content extraction under `contents`. The legacy top-level
+    // `text`/`highlights` flags are silently ignored, so results come back as
+    // id/title/url only (no snippet, no page text) — which is how the adapter
+    // ended up injecting titles and URLs for every Exa search. Bound the text
+    // so one search cannot return megabytes of page content.
+    contents: {
+      text: { maxCharacters: 4000 },
+      highlights: { numSentences: 2 },
+    },
   };
   if (includes.length) body.includeDomains = includes;
   if (excludes.length) body.excludeDomains = excludes;

@@ -305,6 +305,29 @@ describe("GlmStartExecutor request-body admission (3012 gate)", () => {
     expect(result.transformedBody.system[0].text).toBe(OFFICIAL_CLI_PREFIX);
   });
 
+  it("retries 3009 concurrency rejections inside the executor instead of failing", async () => {
+    // real registry config waits 3s between probes — shrink for the test
+    const original = executor.config.retry;
+    executor.config.retry = { 429: { attempts: 3, delayMs: 10 } };
+    try {
+      vi.mocked(proxyAwareFetch)
+        .mockImplementationOnce(async () => jsonResponse(
+          { code: 3009, msg: "model concurrency limit exceeded" }, 429,
+        ))
+        .mockImplementationOnce(async () => jsonResponse(
+          { code: 3009, msg: "model concurrency limit exceeded" }, 429,
+        ))
+        .mockImplementation(async () => jsonResponse({ id: "msg_ok", content: [] }));
+
+      const result = await run({ model: "GLM-5.3-Flash", messages: [{ role: "user", content: "hi" }] });
+
+      expect(result.response.status).toBe(200);
+      expect(vi.mocked(proxyAwareFetch)).toHaveBeenCalledTimes(3);
+    } finally {
+      executor.config.retry = original;
+    }
+  });
+
   it("explains 3012 risk-control blocks without conflating the three actors", () => {
     const parsed = executor.parseError(
       { status: 405 },

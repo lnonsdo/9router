@@ -68,6 +68,10 @@ export function createWebToolsExecutor({ adapterConfig }) {
       }
 
       let lastError = "no provider configured";
+      // Metadata-only results are kept only as a last resort: a provider can
+      // answer 200 with titles/URLs but no snippet or page text, which leaves
+      // the model nothing to work with.
+      let fallbackResults = null;
       const startIndex = entry.roundRobin && entry.providers.length > 1
         ? roundRobinStartIndex(kind, entry.providers.length)
         : 0;
@@ -107,7 +111,18 @@ export function createWebToolsExecutor({ adapterConfig }) {
             const res = await runWithCredentials(providerId, provider, providerConfig, credentials =>
               handleSearchCore({ body: { query, max_results: SEARCH_MAX_RESULTS }, provider, providerConfig, credentials, log }));
             if (res.ok) {
-              return { ok: true, data: { results: Array.isArray(res.data?.results) ? res.data.results : [] } };
+              const results = Array.isArray(res.data?.results) ? res.data.results : [];
+              const usable = results.some(r =>
+                String(r?.snippet || "").trim() || String(r?.content?.text || "").trim());
+              // An empty result set is a legitimate answer; only a non-empty
+              // metadata-only set is worth retrying elsewhere.
+              if (results.length === 0 || usable) {
+                return { ok: true, data: { results } };
+              }
+              // Keep the widest metadata-only set and try the next provider.
+              if (!fallbackResults || results.length > fallbackResults.length) fallbackResults = results;
+              lastError = `${providerId} returned results without content`;
+              continue;
             }
             lastError = res.error;
           }
@@ -115,6 +130,7 @@ export function createWebToolsExecutor({ adapterConfig }) {
           lastError = e?.message || String(e);
         }
       }
+      if (fallbackResults) return { ok: true, data: { results: fallbackResults } };
       return { ok: false, error: lastError };
     },
   };

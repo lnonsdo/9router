@@ -578,7 +578,7 @@ export default function ProviderLimits() {
 
   // Exa desktop sync (dashboard scrape + snapshot refresh) lives in the
   // desktop service layer to keep this file's upstream delta minimal.
-  const { isTauri, handleExaSync, needsLogin: exaNeedsLogin } = useExaDesktopSync({
+  const { isTauri, handleExaSync, syncing: exaSyncing } = useExaDesktopSync({
     connections,
     quotaData,
     refreshProvider,
@@ -1140,7 +1140,10 @@ export default function ProviderLimits() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {sortedConnections.map((conn) => {
           const quota = quotaData[conn.id];
-          const isLoading = loading[conn.id];
+          // An Exa re-sync runs in a webview for a few seconds; without this
+          // the card would sit on its old numbers and look like a dead click.
+          const exaSyncingHere = isTauri && conn.provider === "exa" && exaSyncing.has(conn.id);
+          const isLoading = loading[conn.id] || exaSyncingHere;
           const error = errors[conn.id];
 
           // Use table layout for all providers
@@ -1313,9 +1316,7 @@ export default function ProviderLimits() {
                     <Tooltip
                       text={
                         isTauri && conn.provider === "exa"
-                          ? exaNeedsLogin.has(conn.id)
-                            ? "Refresh quota (Exa needs a sign-in — opens the login window)"
-                            : "Refresh quota (re-syncs the Exa dashboard balance silently)"
+                          ? "Refresh quota (re-syncs the Exa dashboard balance silently; opens a sign-in window only if the session is gone)"
                           : "Refresh quota"
                       }
                     >
@@ -1324,11 +1325,13 @@ export default function ProviderLimits() {
                         onClick={() => {
                           // Exa's real numbers only move when we re-read the
                           // dashboard; a plain re-fetch would just replay the
-                          // cached snapshot and look like a no-op. A silent sync
-                          // when the session is known to be dead would just be
-                          // closed again, so that one shows the login window.
+                          // cached snapshot and look like a no-op. Always try
+                          // the silent window first — the "needs sign-in" flag
+                          // can be stale, and a visible window is only worth it
+                          // when the silent read actually fails (the shell then
+                          // asks for one through exa-sync-needs-login).
                           if (isTauri && conn.provider === "exa") {
-                            handleExaSync(conn.id, { auto: !exaNeedsLogin.has(conn.id) });
+                            handleExaSync(conn.id, {});
                           }
                           refreshProvider(conn.id, conn.provider);
                         }}

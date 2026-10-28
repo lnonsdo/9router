@@ -104,6 +104,33 @@ describe("webToolsBridge roundRobin", () => {
     expect(searchCoreMock.mock.calls.map(c => c[0].provider.id)).toEqual(["tavily", "exa"]);
     expect(fetchCoreMock.mock.calls.map(c => c[0].provider)).toEqual(["jina-reader"]);
   });
+
+  it("skips a provider that returns results without any text", async () => {
+    searchCoreMock.mockReset()
+      .mockResolvedValueOnce({ success: true, data: { results: [{ title: "a", url: "https://a.io" }] } })
+      .mockResolvedValueOnce({ success: true, data: { results: [{ title: "b", url: "https://b.io", snippet: "body text" }] } });
+    const { createWebToolsExecutor } = await import("../../src/sse/services/webToolsBridge.js");
+    const exec = createWebToolsExecutor({
+      adapterConfig: { webSearch: { enabled: true, providers: ["exa", "tavily"] } },
+    });
+    const res = await exec.execute({ kind: "web_search", input: { query: "q" } });
+    expect(res.ok).toBe(true);
+    expect(res.data.results[0].snippet).toBe("body text");
+    expect(searchCoreMock.mock.calls.map(c => c[0].provider.id)).toEqual(["exa", "tavily"]);
+  });
+
+  it("keeps the metadata-only set when no provider returns text", async () => {
+    searchCoreMock.mockReset().mockResolvedValue({
+      success: true, data: { results: [{ title: "a", url: "https://a.io" }] },
+    });
+    const { createWebToolsExecutor } = await import("../../src/sse/services/webToolsBridge.js");
+    const exec = createWebToolsExecutor({
+      adapterConfig: { webSearch: { enabled: true, providers: ["exa", "tavily"] } },
+    });
+    const res = await exec.execute({ kind: "web_search", input: { query: "q" } });
+    expect(res.ok).toBe(true);
+    expect(res.data.results).toHaveLength(1);
+  });
 });
 
 const json = (body) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
@@ -1146,9 +1173,9 @@ describe("search result excerpts", () => {
     expect(block.snippet).toContain("PAGE BODY");
   });
 
-  it("clips the excerpt at 800 characters", async () => {
+  it("clips the excerpt at 1200 characters", async () => {
     const { modelText } = await run([{ title: "t", url: "https://x.io/c", snippet: "y".repeat(2000) }]);
-    expect(modelText).toContain(`${"y".repeat(800)}…`);
-    expect(modelText).not.toContain("y".repeat(801));
+    expect(modelText).toContain(`${"y".repeat(1200)}…`);
+    expect(modelText).not.toContain("y".repeat(1201));
   });
 });

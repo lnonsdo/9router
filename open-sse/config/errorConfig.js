@@ -65,6 +65,10 @@ export const ERROR_RULES = [
   { text: "no credentials",           cooldownMs: COOLDOWN.long },
   { text: "request not allowed",      cooldownMs: COOLDOWN.short },
   { text: "improperly formed request", cooldownMs: COOLDOWN.long },
+  // Concurrency caps (z.ai 3009 "model concurrency limit exceeded", etc.) clear
+  // the moment one in-flight request finishes — a short cooldown + retry beats
+  // the 429 exponential backoff, which maxes at 5 minutes of downtime.
+  { text: "concurrency limit",        cooldownMs: COOLDOWN.short },
   { text: "rate limit",               backoff: true },
   { text: "too many requests",        backoff: true },
   { text: "quota exceeded",           backoff: true },

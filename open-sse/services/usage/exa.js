@@ -330,7 +330,7 @@ export async function getExaUsage(connection) {
         if (loginStatus) {
           return {
             ...synced,
-            message: `${synced.message} · Exa sign-in expired, so the last sync could not refresh — press refresh and sign in`,
+            message: `${synced.message} · Exa sign-in expired, so the last sync could not refresh — press refresh to sign in, or paste a dashboard cookie in Edit Connection`,
             // The card uses this to send the next refresh through the visible
             // login window instead of another doomed silent attempt.
             meta: { ...synced.meta, needsLogin: true },

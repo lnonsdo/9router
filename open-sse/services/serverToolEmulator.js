@@ -54,7 +54,7 @@ const SERVER_TOOL_KINDS = [
 ];
 
 const WEB_SEARCH_MAX_RESULTS = 8;   // per page, mirrors Anthropic's small default page
-const WEB_SEARCH_SNIPPET_CHARS = 800;  // model-visible excerpt per result
+const WEB_SEARCH_SNIPPET_CHARS = 1200; // model-visible excerpt per result
 const WEB_SEARCH_SHORT_SNIPPET = 400;  // below this, append the provider's page text
 const WEB_FETCH_MAX_CHARS = 50000;  // rough stand-in for Anthropic's max_content_tokens
 const DEFAULT_MAX_USES_PER_TOOL = 5;

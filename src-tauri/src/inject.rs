@@ -60,6 +60,10 @@ pub(crate) const EXA_SYNC_JS_TEMPLATE: &str = r#"
   var CONNECTION_ID = "__CONNECTION_ID__";
   var EXPECTED_PREFIX = "__KEY_PREFIX__";
   var AUTO = "__AUTO__" === "1";
+  // Interactive: a window the user can sign in on. It never aborts — the user
+  // is the one who can fix a dead session, so it keeps polling and tells them
+  // what to do instead of closing itself.
+  var INTERACTIVE = "__INTERACTIVE__" === "1";
   var sent = false;
   var tries = 0;
   var busy = false;
@@ -109,6 +113,16 @@ pub(crate) const EXA_SYNC_JS_TEMPLATE: &str = r#"
   var attempts = [];
 
   function requestJSON(req) {
+    return request(req).then(function (res) {
+      return res && res.ok ? res.data : null;
+    });
+  }
+
+  // Like requestJSON, but keeps the HTTP status: a timeout/network failure
+  // (status 0) says nothing about the session, while a redirect or an error
+  // status means Exa rejected it. The caller must not confuse the two — a
+  // throttled hidden webview used to look exactly like a signed-out one.
+  function request(req) {
     if (!req || !req.url) return Promise.resolve(null);
     var headers = { accept: "application/json" };
     if (req.headers) {
@@ -128,11 +142,17 @@ pub(crate) const EXA_SYNC_JS_TEMPLATE: &str = r#"
     return withTimeout(fetch(req.url, opts)
       .then(function (r) {
         attempts.push({ url: req.url, method: opts.method, status: r.status });
-        return r.ok ? r.json() : null;
+        if (!r.ok) return { ok: false, status: r.status, data: null };
+        return r.json().then(function (data) {
+          return { ok: true, status: r.status, data: data };
+        }, function () {
+          // 200 with a non-JSON body (the login page): unauthenticated.
+          return { ok: false, status: r.status, data: null };
+        });
       })
       .catch(function () {
         attempts.push({ url: req.url, method: opts.method, status: "error" });
-        return null;
+        return { ok: false, status: 0, data: null };
       }), 12000);
   }
 
@@ -232,14 +252,20 @@ pub(crate) const EXA_SYNC_JS_TEMPLATE: &str = r#"
     banner = null;
   }
 
-  // Nothing usable came back: tell Rust. A background sync is closed silently;
-  // a user-started one is revealed so the login page / banner is visible.
-  function abort() {
+  // Nothing usable came back: tell Rust. `reason` separates a dead session
+  // ("auth", safe to drop the saved cookies) from a throttled/timed-out read
+  // ("timeout"), which says nothing about the session.
+  function abort(reason) {
     sent = true;
     try {
       window.__TAURI_INTERNALS__.invoke("plugin:event|emit", {
         event: "exa-sync-abort",
-        payload: { connectionId: CONNECTION_ID, auto: AUTO }
+        payload: {
+          connectionId: CONNECTION_ID,
+          auto: AUTO,
+          interactive: INTERACTIVE,
+          reason: reason || "auth"
+        }
       });
     } catch (e) {}
   }
@@ -259,14 +285,28 @@ pub(crate) const EXA_SYNC_JS_TEMPLATE: &str = r#"
     if (sent || busy) return;
     busy = true;
     tries += 1;
-    getJSON("/api/get-credits").then(function (credits) {
-      // Not logged in: this endpoint answers with a redirect/empty body instead
-      // of credits. A valid session answers on the first try, so stop right
-      // away rather than retrying for minutes behind a hidden window (WebKit
-      // throttles this page's timers, so each retry can take ~25s).
+    request({ url: "/api/get-credits", method: "GET" }).then(function (res) {
+      var status = res ? res.status : 0;
+      var credits = res && res.ok ? res.data : null;
+      // Not logged in: this endpoint answers with a redirect / HTML login page
+      // instead of credits. A valid session answers on the first try.
       if (!credits || typeof credits.orbCreditsInCents !== "number") {
-        progress("no-credits");
-        abort();
+        if (status === 0) {
+          // Hidden webviews have throttled timers, so a late response is not a
+          // signed-out session: retry once, and never touch the saved cookies
+          // because of a timeout. An interactive window (the user is signing
+          // in) has no reason to give up at all.
+          progress("credits-timeout");
+          if (!INTERACTIVE && tries >= 2) abort("timeout");
+        } else {
+          progress("no-credits:" + status);
+          if (INTERACTIVE) {
+            // The user can fix this right here: keep polling, they sign in.
+            showBanner("尚未登录 Exa（或会话已过期）：请在此窗口登录 / 切换到正确账户，登录后会自动完成同步并关闭窗口。若这里登录不便，也可以在连接的 Edit Connection 里粘贴控制台 session cookie。");
+          } else {
+            abort("auth");
+          }
+        }
         busy = false;
         return;
       }
@@ -286,7 +326,9 @@ pub(crate) const EXA_SYNC_JS_TEMPLATE: &str = r#"
             if (!owns) {
               showBanner("当前登录的 Exa 账户不拥有这个连接使用的 API Key。请在此页面切换到对应账户，检测到匹配后会自动完成同步。");
               progress("wrong-account");
-              if (tries >= 6) abort();
+              // An interactive window is the user's to fix; a silent one gives
+              // up so the shell can offer a sign-in window instead.
+              if (!INTERACTIVE && tries >= 6) abort("wrong-account");
               busy = false;
               return;
             }

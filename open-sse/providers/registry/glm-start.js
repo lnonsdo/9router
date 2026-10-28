@@ -36,6 +36,13 @@ const glmStart = {
     format: "claude",
     // captured official-client shape: only anthropic-version, no beta flags
     headers: { "anthropic-version": "2023-06-01" },
+    // Start Plan enforces concurrency 1 per model and sheds load as 429
+    // "model concurrency limit exceeded" (z.ai 3009; global capacity event
+    // 2026-10-27 also surfaces as system-busy). Collisions clear in seconds —
+    // wait and re-probe inside the executor instead of failing to the client.
+    retry: {
+      429: { attempts: 3, delayMs: 3000 },
+    },
     // executor overrides buildHeaders entirely (zcode JWT in both auth headers)
     auth: {
       combined: true,
