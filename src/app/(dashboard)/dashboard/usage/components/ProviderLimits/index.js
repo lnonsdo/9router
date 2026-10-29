@@ -4,6 +4,9 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import ProviderIcon from "@/shared/components/ProviderIcon";
 import QuotaTable from "./QuotaTable";
+// fork-only modules (no upstream counterpart, so they never conflict on a sync)
+import QuotaSummaryRow from "./QuotaSummaryRow";
+import { isAdditiveQuotaProvider, sortQuotasByExhaustion } from "./quotaExhaustion.js";
 import ArkOpenApiPanel from "./ArkOpenApiPanel";
 import Toggle from "@/shared/components/Toggle";
 import Tooltip from "@/shared/components/Tooltip";
@@ -1155,7 +1158,17 @@ export default function ProviderLimits() {
           const isResettingLimit = resettingLimitId === conn.id;
           const rowBusy = deletingId === conn.id || togglingId === conn.id || isResettingLimit;
           const rawQuotas = quota?.quotas || [];
-          const visibleQuotas = filterQuotasByVisibility(conn.provider, rawQuotas, quotaVisibility);
+          const filteredQuotas = filterQuotasByVisibility(conn.provider, rawQuotas, quotaVisibility);
+          // Rank CodeBuddy by remaining capacity, not by the provider's
+          // soonest-expiry-first order — otherwise a used-up or lapsed bonus pack
+          // sits above the refill pack that still works. Scoped to the additive
+          // (single-unit pack) providers so upstream's own ordering for windowed
+          // trackers like Claude/Codex is left exactly as it is. QuotaTable's
+          // `sortMode="default"` is the identity, so this survives into render.
+          const canSumQuotas = isAdditiveQuotaProvider(conn.provider);
+          const visibleQuotas = canSumQuotas
+            ? sortQuotasByExhaustion(filteredQuotas)
+            : filteredQuotas;
           const hiddenQuotaRows = getHiddenQuotaRows(conn.provider, rawQuotas, quotaVisibility);
 
           return (
@@ -1422,6 +1435,10 @@ export default function ProviderLimits() {
                       <div className="mb-2 rounded-md bg-amber-50 dark:bg-amber-950/30 px-2.5 py-1.5 border border-amber-200 dark:border-amber-800">
                         <p className="text-xs text-amber-700 dark:text-amber-400">{quota.raw.warning}</p>
                       </div>
+                    )}
+                    {canSumQuotas && (
+                      // fork-only strip: totals CodeBuddy's API never reports
+                      <QuotaSummaryRow quotas={visibleQuotas} compact />
                     )}
                     <QuotaTable
                       quotas={visibleQuotas}

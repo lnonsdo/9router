@@ -468,7 +468,11 @@ conflict: `open-sse/services/serverToolEmulator.js`, `open-sse/services/webTools
 `src/lib/db/repos/webToolUsageRepo.js`, `src-tauri/` (desktop shell, incl.
 `capabilities/exa-connect.json`), `src/app/api/providers/[id]/exa-key-hint/route.js`,
 `src/sse/services/webToolsBridge.js`, `src/shared/components/WebToolsAdapterSection.js`,
-`tests/unit/webTools*.test.js`, `tests/unit/provider-spend-db.test.js`, `FORK.md`, and the
+`tests/unit/webTools*.test.js`, `tests/unit/provider-spend-db.test.js`,
+`src/app/(dashboard)/dashboard/usage/components/ProviderLimits/quotaExhaustion.js` and
+`QuotaSummaryRow.jsx` (quota-tracker ranking + roll-up; the `.jsx` extension lets Vite/vitest
+transform it natively, so `tests/vitest.config.js` stays pristine),
+`tests/unit/codebuddy-quota-*.test.js`, `FORK.md`, and the
 fork-only providers (`open-design.js`, `ark-ap-provider.js`).
 
 The edits to **upstream files** are intentionally small and self-contained — if a merge
@@ -485,7 +489,7 @@ conflicts, these are the only anchors to re-apply:
 | `src/app/api/usage/[connectionId]/route.js` | 1 line | import `getUsageForProvider` from `open-sse/services/webToolQuota.js` (fork dispatcher wrapping the upstream map) |
 | `open-sse/providers/registry/exa.js`, `tavily.js` | 4 lines each | `features: { usage: true, usageApikey: true }` |
 | `.../ProviderLimits/utils.js` | 4 lines | `parseQuotaData` generic branch also forwards `unit`, `unlimited`, `isCreditBalance`, `currency` |
-| `.../ProviderLimits/index.js` | ~35 lines | `isTauri` state; `handleExaSync` (emits `open-exa-connect`); `exa-sync-done` listener that refreshes the card; one cloud icon button next to "Refresh quota" |
+| `.../ProviderLimits/index.js` | ~35 lines + 18 | `isTauri` state; `handleExaSync` (emits `open-exa-connect`); `exa-sync-done` listener that refreshes the card; one cloud icon button next to "Refresh quota"; **plus** 2 imports of the fork-only `QuotaSummaryRow`/`quotaExhaustion` modules, the `canSumQuotas` + `sortQuotasByExhaustion(filteredQuotas)` re-rank beside `visibleQuotas` (exhausted CodeBuddy packs sink; scoped to the additive providers so upstream's own ordering for Claude/Codex windows is untouched — `QuotaTable`'s `sortMode="default"` is the identity, so it survives into render), and one `<QuotaSummaryRow>` above `<QuotaTable>`. Upstream-owned `QuotaTable.js` and `utils.js` are left byte-identical so the sync stays conflict-free |
 | `open-sse/handlers/chatCore/nonStreamingHandler.js` | ~25 lines | `pivotToClientWire()` export + the single call right after `translateNonStreamingResponse()`; the `isResponsesResponse` check also accepts an `output` array |
 | `src/sse/handlers/chat.js` | ~10 lines | import + `webToolsAdapter`/`executeServerTool` params in the `handleChatCore({…})` call; `filterWebToolsAdapterForKey(await getKeyAccessContext(request), …)` around the adapter config |
 | `src/sse/services/keyAccess.js` | ~30 lines | `filterWebToolsAdapterForKey` right before `filterModelsListForKey` |

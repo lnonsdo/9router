@@ -43,7 +43,8 @@
     },
     "externalBin": [],
     "macOS": {
-      "minimumSystemVersion": "11.0.0"
+      "minimumSystemVersion": "11.0.0",
+      "signingIdentity": "9RouterDev"
     },
     "category": "Utilities",
     "shortDescription": "9Router AI gateway desktop app"

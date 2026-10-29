@@ -67,7 +67,8 @@ export default {
     { id: "deepseek-v4.1-flash-economy", name: "DeepSeek V4.1 Flash Economy" },
     { id: "minimax-m3", name: "MiniMax M3" },
     { id: "doubao-embedding-vision", name: "Doubao Embedding Vision", kind: "embedding" },
-    { id: "doubao-seedream-5.0-lite", name: "Doubao Seedream 5.0 Lite", kind: "image", params: ["n", "size", "quality", "response_format"] },
+    { id: "doubao-seedream-5.0-flash", name: "Doubao Seedream 5.0 Flash", kind: "image", capabilities: ["text2img", "edit", "multiImage"], params: ["size", "layer_decompositionnew", "response_format", "background", "output_format"] },
+    { id: "doubao-seedream-5.0-pro", name: "Doubao Seedream 5.0 Pro", kind: "image", capabilities: ["text2img", "edit", "multiImage"], params: ["size", "layer_decompositionnew", "response_format", "background", "output_format"] },
     { id: "seed-tts-2.0", name: "Seed TTS 2.0", kind: "tts" },
   ],
   serviceKinds: ["llm", "embedding", "tts", "image"],
@@ -85,6 +86,6 @@ export default {
   },
   imageConfig: {
     baseUrl: "https://ark.cn-beijing.volces.com/api/plan/v3/images/generations",
-    defaultSize: "2048x2048",
+    defaultSize: "1536x1536",
   },
 };
