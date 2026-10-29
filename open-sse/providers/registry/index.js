@@ -146,6 +146,7 @@ import p146 from "./chatgpt-web.js";
 import p147 from "./veoaifree-web.js";
 import p151 from "./uc-web.js";
 import p152 from "./runcrate.js";
+import p153 from "./nace.js";
 // Local custom providers. Named rather than numbered so upstream's pN sequence
 // can keep growing without colliding with (or shadowing) these identifiers.
 import arkApProvider from "./ark-ap-provider.js";
@@ -299,6 +300,7 @@ export default [
   p147,
   p151,
   p152,
+  p153,
   // local custom providers
   arkApProvider,
   volcengineSso,
