@@ -43,7 +43,8 @@ describe("QODER_MODEL_MAP", () => {
   });
 
   it("exposes Qoder's latest model in the static provider catalog", () => {
-    expect(PROVIDER_MODELS.qd.some((model) => model.id === "qmodel_latest")).toBe(true);
+    // PROVIDER_MODELS is keyed by the registry alias, which now matches the id.
+    expect(PROVIDER_MODELS.qoder.some((model) => model.id === "qmodel_latest")).toBe(true);
   });
 });
 
