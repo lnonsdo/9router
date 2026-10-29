@@ -20,6 +20,7 @@ const FORMAT_TO_NATIVE = {
   antigravity: "gemini-budget",
   kiro: "kiro",
   commandcode: "commandcode",
+  ollama: "ollama",
 };
 
 // Strip a trailing thinking suffix "model(value)" → "model" (no-op when absent).
@@ -467,6 +468,14 @@ function applyFormat(fmt, body, cfg, caps, supportedLevels, display, targetForma
       }
       const level = toLevel(eff);
       if (level) body.params.reasoning_effort = level;
+      break;
+    }
+    case "ollama": {
+      // Ollama /api/chat has a boolean `think` dial — no effort levels on the
+      // wire. Any level/budget intent maps to on; only "none" (on a model that
+      // can disable) turns thinking off. "auto" keeps the model's default.
+      if (none && canDisable) { body.think = false; break; }
+      if (eff.mode === "level" || eff.mode === "budget") body.think = true;
       break;
     }
     default:

@@ -14,6 +14,11 @@ export default {
   transport: {
     baseUrl: "http://localhost:11434/api/chat",
     format: "ollama",
+    thinkingFormat: "ollama",
+  },
+  thinkingConfig: {
+    options: ["auto", "on", "off"],
+    defaultMode: "auto",
   },
   models: [
     { id: "clef", name: "Clef", kind: "systemone" },
