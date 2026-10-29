@@ -23,8 +23,13 @@ const SPECIALIZED = new Set([
   "xiaomi-tokenplan", "mimo-free",
 ]);
 
-// Per-process / per-request values: kimi's random device name, minimax's session UUID.
-const VOLATILE_HEADERS = new Set(["x-msh-device-name", "x-mavis-session-id"]);
+// Per-process / per-request values: kimi's random device name, minimax's session UUID,
+// and codebuddy's per-request request/conversation UUIDs (added upstream in v0.5.112
+// without a snapshot refresh, so the golden test fails on upstream/master too).
+const VOLATILE_HEADERS = new Set([
+  "x-msh-device-name", "x-mavis-session-id",
+  "x-request-id", "x-conversation-id", "x-conversation-request-id", "x-conversation-message-id",
+]);
 
 // Sanitize header: khử token + field thời gian động (kimi X-Msh-Device-Id) để snapshot ổn định.
 function sanitize(headers) {
