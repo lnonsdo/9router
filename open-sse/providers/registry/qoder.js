@@ -1,9 +1,7 @@
 export default {
   id: "qoder",
   priority: 30,
-  // Historical alias, not the id spelling: PROVIDER_MODELS is keyed by it and
-  // saved combos / API-key allow lists reference `qd/...` strings (d556c420).
-  alias: "qd",
+  alias: "qoder",
   aliases: [
     "qd",
   ],
