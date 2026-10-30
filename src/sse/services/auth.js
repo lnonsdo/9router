@@ -21,6 +21,14 @@ const GITHUB_MONTHLY_USAGE_LIMIT = "you've reached your additional usage limit f
 // the lock immediately (self-service unlock), as does any successful request.
 const RISK_CONTROL_COOLDOWN_MS = 60 * 60 * 1000;
 
+// The 3012 hit ledger: timestamps persisted on the connection (survives the
+// requestDetails rotation). RISK_HITS_AUTO_DISABLE hits inside the rolling
+// window flip the connection to isActive:false — a hard fuse so failover can
+// never burn account after account unattended. Re-enabling is manual and does
+// NOT reset the ledger (resetHealthStateOnActivation leaves unknown keys alone).
+const RISK_HIT_WINDOW_MS = 24 * 60 * 60 * 1000;
+const RISK_HITS_AUTO_DISABLE = 3;
+
 function githubMonthlyResetMs(status, errorText, provider) {
   if (resolveProviderId(provider) !== "github" || Number(status) !== 402) return null;
   if (!String(errorText || "").toLowerCase().includes(GITHUB_MONTHLY_USAGE_LIMIT)) return null;
@@ -288,6 +296,19 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   }
   if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
 
+  // 3012 hit ledger + hard fuse (see RISK_HITS_AUTO_DISABLE above)
+  let riskHits = null;
+  let autoDisabled = false;
+  if (riskControlled) {
+    const now = Date.now();
+    const prior = Array.isArray(conn?.riskControlHits) ? conn.riskControlHits : [];
+    riskHits = [...prior, new Date(now).toISOString()]
+      .map((ts) => new Date(ts).getTime())
+      .filter((t) => Number.isFinite(t) && now - t < RISK_HIT_WINDOW_MS)
+      .sort((a, b) => a - b);
+    autoDisabled = riskHits.length >= RISK_HITS_AUTO_DISABLE;
+  }
+
   const reason = typeof errorText === "string" ? errorText.slice(0, 200) : "Provider error";
   const lockUpdate = buildModelLockUpdate((githubResetAtMs || riskControlled) ? null : model, cooldownMs);
 
@@ -297,12 +318,18 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     lastError: reason,
     errorCode: status,
     lastErrorAt: new Date().toISOString(),
-    backoffLevel: newBackoffLevel ?? backoffLevel
+    backoffLevel: newBackoffLevel ?? backoffLevel,
+    ...(riskHits !== null ? { riskControlHits: riskHits.map((t) => new Date(t).toISOString()) } : {}),
+    ...(autoDisabled ? { isActive: false } : {}),
   });
 
   const lockKey = Object.keys(lockUpdate)[0];
   const connName = conn?.displayName || conn?.name || conn?.email || connectionId.slice(0, 8);
   log.warn("AUTH", `${connName} locked ${lockKey} for ${Math.round(cooldownMs / 1000)}s [${status}]`);
+
+  if (autoDisabled) {
+    log.warn("AUTH", `${connName} hit ${riskHits.length} risk-control rejections in 24h — connection DISABLED. Verify the channel upstream, then re-enable it manually.`);
+  }
 
   if (provider && status && reason) {
     console.error(`❌ ${provider} [${status}]: ${reason}`);

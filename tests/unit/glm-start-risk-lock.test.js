@@ -106,4 +106,65 @@ describe("glm-start risk-control lock (3012)", () => {
     expect(result.shouldFallback).toBe(false);
     expect(dbMocks.updateProviderConnection).not.toHaveBeenCalled();
   });
+
+  it("records the first 3012 in the persistent ledger without disabling", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-24T05:00:00.000Z"));
+
+    try {
+      await markAccountUnavailable("glm-start-a", 405, RISK_3012_MESSAGE, "glm-start", "GLM-5.3-Flash");
+
+      const update = dbMocks.updateProviderConnection.mock.calls[0][1];
+      expect(update.riskControlHits).toEqual(["2026-10-24T05:00:00.000Z"]);
+      expect(update.isActive).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("auto-disables the connection on the 3rd hit inside 24h", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-24T05:00:00.000Z"));
+    dbMocks.getProviderConnections.mockResolvedValue([{
+      id: "glm-start-a",
+      provider: "glm-start",
+      name: "glm-start-a",
+      backoffLevel: 0,
+      // two hits already inside the window
+      riskControlHits: ["2026-10-24T03:10:00.000Z", "2026-10-24T04:20:00.000Z"],
+    }]);
+
+    try {
+      await markAccountUnavailable("glm-start-a", 405, RISK_3012_MESSAGE, "glm-start", "GLM-5.3-Flash");
+
+      const update = dbMocks.updateProviderConnection.mock.calls[0][1];
+      expect(update.riskControlHits).toHaveLength(3);
+      expect(update.isActive).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("prunes ledger hits older than the 24h window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-24T05:00:00.000Z"));
+    dbMocks.getProviderConnections.mockResolvedValue([{
+      id: "glm-start-a",
+      provider: "glm-start",
+      name: "glm-start-a",
+      backoffLevel: 0,
+      // two hits, but both outside the rolling window — only today's counts
+      riskControlHits: ["2026-10-22T05:00:00.000Z", "2026-10-23T04:59:00.000Z"],
+    }]);
+
+    try {
+      await markAccountUnavailable("glm-start-a", 405, RISK_3012_MESSAGE, "glm-start", "GLM-5.3-Flash");
+
+      const update = dbMocks.updateProviderConnection.mock.calls[0][1];
+      expect(update.riskControlHits).toEqual(["2026-10-24T05:00:00.000Z"]);
+      expect(update.isActive).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
