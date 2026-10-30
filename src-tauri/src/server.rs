@@ -127,7 +127,8 @@ fn server_env(node_bin: &str) -> Vec<(String, String)> {
     }
     env.push(("PATH".into(), path_val));
     env.push(("PORT".into(), SERVER_PORT.into()));
-    env.push(("HOSTNAME".into(), "127.0.0.1".into()));
+    let host = bind_host();
+    env.push(("HOSTNAME".into(), host.clone()));
     env.push(("NODE_ENV".into(), "production".into()));
     env.push(("NEXT_TELEMETRY_DISABLED".into(), "1".into()));
     // Override BASE_URL / NEXT_PUBLIC_BASE_URL: the bundled .env has port 20128
@@ -136,8 +137,39 @@ fn server_env(node_bin: &str) -> Vec<(String, String)> {
     let base = format!("http://127.0.0.1:{SERVER_PORT}");
     env.push(("BASE_URL".into(), base.clone()));
     env.push(("NEXT_PUBLIC_BASE_URL".into(), base));
-    // Bind to loopback only - the WebView is local; no LAN exposure needed.
+    // 0.0.0.0 still answers on loopback, so BASE_URL above stays valid.
+    if host == "0.0.0.0" {
+        eprintln!("[9router] server bound to 0.0.0.0 — dashboard and API reachable from the LAN");
+    }
     env
+}
+
+/// Host the bundled server binds to. Loopback by default; open it to the LAN by
+/// setting NINEROUTER_HOSTNAME=0.0.0.0, or by writing that value to
+/// ~/.9router/hostname — a Finder launch inherits no shell env, so the file is
+/// the practical switch for the desktop app.
+///
+/// Only loopback and 0.0.0.0 are accepted: the webview and panel URLs are
+/// hardcoded to 127.0.0.1 (consts.rs), and a server bound to one specific LAN
+/// address would no longer answer on loopback.
+fn bind_host() -> String {
+    const LOOPBACK: &str = "127.0.0.1";
+    let requested = std::env::var("NINEROUTER_HOSTNAME").ok().or_else(|| {
+        let home = std::env::var("HOME").ok()?;
+        std::fs::read_to_string(PathBuf::from(home).join(".9router").join("hostname")).ok()
+    });
+    let Some(raw) = requested else {
+        return LOOPBACK.to_string();
+    };
+    let host = raw.lines().next().unwrap_or("").trim().to_string();
+    match host.as_str() {
+        "" | "127.0.0.1" | "localhost" | "::1" => LOOPBACK.to_string(),
+        "0.0.0.0" => host,
+        other => {
+            eprintln!("[9router] ignoring unsupported bind host {other:?} (use 0.0.0.0 or 127.0.0.1)");
+            LOOPBACK.to_string()
+        }
+    }
 }
 
 /// Spawn the Next.js standalone server as a detached child and track it.
