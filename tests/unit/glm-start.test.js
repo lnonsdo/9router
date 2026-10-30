@@ -335,12 +335,13 @@ describe("GlmStartExecutor request-body admission (3012 gate)", () => {
     );
     expect(parsed.status).toBe(405);
     expect(parsed.message).toContain("3012");
-    // per-request scoring (no account cooldown)…
-    expect(parsed.message).toContain("one-by-one");
+    // temporary rejection windows — identical shapes pass again hours later
+    expect(parsed.message).toContain("rejection windows");
+    expect(parsed.message).toContain("hours later");
     // …the local lock is ours and self-service unlockable…
     expect(parsed.message).toContain("locked this connection");
     expect(parsed.message).toContain("Test");
-    // …and repeated failure means rule drift, not account trouble
+    // …and failure across hours means rule drift, not account trouble
     expect(parsed.message).toContain("admission rules likely changed");
   });
 });

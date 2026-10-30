@@ -159,21 +159,22 @@ export class GlmStartExecutor extends DefaultExecutor {
     return transformed;
   }
 
-  // Make 3012 self-explanatory — and keep the three actors separate: the Z.AI
-  // block is per-request (no account cooldown), the local lock is ours, and
-  // "never retry" guards against the penalty escalation the reference project
-  // observed under heavier abuse.
+  // Make 3012 self-explanatory — and keep the actors separate: the Z.AI gate
+  // opens TEMPORARY rejection windows (verified 2026-10-30/31: an identical
+  // byte-shape 3012'd at 21:22 UTC and passed at 04:22 UTC), so the right move
+  // is waiting, not retrying; the local lock is ours; rule drift is the
+  // fallback hypothesis when windows stop closing.
   parseError(response, bodyText) {
     const base = super.parseError(response, bodyText);
     if (/3012|unusual activity/i.test(bodyText || "")) {
       return {
         ...base,
-        message: "Z.AI risk control rejected this request (3012 unusual activity) — it scores "
-          + "requests one-by-one, so a corrected request is admitted again immediately. "
-          + "9router has locked this connection for 1h to avoid repeat probes; a passing "
-          + "Test on the connection clears the lock sooner. If every request keeps failing, "
-          + "the gateway's admission rules likely changed again — check the upstream "
-          + "reference implementation before retrying.",
+        message: "Z.AI risk control rejected this request (3012 unusual activity). The gateway opens "
+          + "temporary rejection windows during which every request bounces — identical shapes pass "
+          + "again hours later, so wait 1-2h and probe ONCE with the connection Test instead of retrying. "
+          + "9router has locked this connection for 1h; a passing Test clears the lock sooner. "
+          + "If tests keep failing across hours, the admission rules likely changed — check the "
+          + "upstream reference implementation.",
       };
     }
     return base;
