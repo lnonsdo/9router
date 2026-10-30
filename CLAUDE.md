@@ -25,6 +25,15 @@ npm run build && PORT=20128 HOSTNAME=0.0.0.0 npm run start           # productio
 - Default runtime port is **20128** (dashboard at `/dashboard`, API at `/v1`).
 - Lint: `npx eslint .` (config `eslint.config.mjs`, extends `eslint-config-next`).
 
+Desktop app (`src-tauri/`, macOS):
+```bash
+pnpm tauri:build             # compile + bundle 9Router.app (reuses cached standalone build)
+pnpm tauri:build:dmg         # same, plus the .dmg
+pnpm build:standalone:force  # rebuild standalone-dist from scratch, bypassing both caches
+```
+- `build:standalone` is cached under `.build-cache/`: a source stamp skips `next build` when nothing it consumes changed, and the resolved `next` node_modules is snapshotted and cloned back (APFS clonefile) instead of re-running `npm install`.
+- The bundled server binds to loopback; `0.0.0.0` in `~/.9router/hostname` (or `NINEROUTER_HOSTNAME`) opens it to the LAN.
+
 CLI package (`cli/`):
 ```bash
 npm run cli:pack       # build + npm pack from root
