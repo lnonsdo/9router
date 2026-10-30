@@ -13,6 +13,15 @@ import { DEFAULT_MAX_TOKENS } from "../../config/runtimeConfig.js";
 const CACHE_CONTROL_5M = { type: "ephemeral" };
 const CACHE_CONTROL_1H = { type: "ephemeral", ttl: "1h" };
 
+// Anthropic only requires max_tokens > thinking.budget_tokens, but a ~1k
+// remainder lets the budget consume the whole visible turn: Claude Code's
+// adaptive + output_config.effort:"xhigh" becomes budget_tokens 32768 under a
+// 32000 max_tokens, and the model then answers with a one-line status and
+// stop_reason "end_turn" instead of its next tool call. Reserve real answer
+// space whenever a budget is present, including when max_tokens already
+// exceeds the budget.
+const MIN_RESPONSE_HEADROOM = 8192;
+
 // Anthropic rejects a tool carrying BOTH defer_loading:true and cache_control
 // ("Tools defer_loading cannot use prompt caching", #3567). MCP clients put
 // deferred tools at the tail, which is exactly where the cache anchor lands.
@@ -569,11 +578,14 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
     // Anthropic requires max_tokens strictly greater than budget_tokens (else 400).
     // Prefer raising max_tokens to preserve the requested thinking depth; if the
     // budget alone meets/exceeds the ceiling, cap output and shrink the budget so
-    // some tokens remain for the answer.
-    if (body.thinking?.type === "enabled" && body.thinking.budget_tokens && body.thinking.budget_tokens >= body.max_tokens) {
-      body.max_tokens = Math.min(body.thinking.budget_tokens + 1024, ceiling);
-      if (body.thinking.budget_tokens >= body.max_tokens) {
-        body.thinking.budget_tokens = Math.max(1024, body.max_tokens - 1024);
+    // some tokens remain for the answer. Small ceilings take at most half the
+    // budget as answer space, so an 8k model is not left with a 1k thinking budget.
+    const answerHeadroom = Math.min(MIN_RESPONSE_HEADROOM, Math.max(1024, Math.floor(body.max_tokens / 2)));
+    if (body.thinking?.type === "enabled" && body.thinking.budget_tokens &&
+        body.thinking.budget_tokens + answerHeadroom > body.max_tokens) {
+      body.max_tokens = Math.min(body.thinking.budget_tokens + answerHeadroom, ceiling);
+      if (body.thinking.budget_tokens + answerHeadroom > body.max_tokens) {
+        body.thinking.budget_tokens = Math.max(1024, body.max_tokens - answerHeadroom);
       }
     }
   }

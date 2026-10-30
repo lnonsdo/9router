@@ -113,7 +113,8 @@ describe("OpenAI → Claude context mapping", () => {
     });
 
     // Budget fits under the ceiling but exceeds a small client max_tokens →
-    // raise max_tokens to fit, preserving the requested thinking depth.
+    // raise max_tokens to fit, preserving the requested thinking depth and
+    // leaving a real answer window (MIN_RESPONSE_HEADROOM).
     it("xhigh budget with a low client max_tokens → raise max_tokens, preserve budget", () => {
       const out = prepareClaudeRequest({
         model: "claude-opus-4-20250514",
@@ -122,7 +123,7 @@ describe("OpenAI → Claude context mapping", () => {
         messages: [{ role: "user", content: "q" }],
       }, "anthropic");
       expect(out.thinking.budget_tokens).toBe(32768);
-      expect(out.max_tokens).toBe(33792); // 32768 + 1024, under the 64000 ceiling
+      expect(out.max_tokens).toBe(40768); // 32768 + 8000 (half of the 16k cap), under the 64000 ceiling
     });
 
     // Budget already below max_tokens → nothing to reconcile.
@@ -161,7 +162,7 @@ describe("OpenAI → Claude context mapping", () => {
         messages: [{ role: "user", content: "q" }],
       }, "anthropic");
       expect(out.max_tokens).toBe(128000);
-      expect(out.thinking.budget_tokens).toBe(126976); // 128000 - 1024
+      expect(out.thinking.budget_tokens).toBe(119808); // 128000 - 8192
       expect(out.thinking.budget_tokens).toBeLessThan(out.max_tokens);
     });
 
