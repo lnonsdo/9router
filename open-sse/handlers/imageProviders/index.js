@@ -28,6 +28,7 @@ const ADAPTERS = {
   xai: createOpenAIAdapter("xai"),
   sensenova: createOpenAIAdapter("sensenova"),
   "ark-ap-provider": createOpenAIAdapter("ark-ap-provider"),
+  "open-design": createOpenAIAdapter("open-design"),
   gemini,
   codex,
   sdwebui,

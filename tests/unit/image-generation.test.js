@@ -596,4 +596,96 @@ describe("handleImageGenerationCore", () => {
     expect(result.success).toBe(true);
     expect(onRequestSuccess).toHaveBeenCalledTimes(1);
   });
+
+  it("forwards the input image for imageEdit providers (ark-ap Seedream)", async () => {
+    global.fetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ created: 1, data: [{ url: "https://example.com/out.png" }] }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const result = await handleImageGenerationCore({
+      body: { prompt: "make it night", image: "https://example.com/ref.png" },
+      modelInfo: { provider: "ark-ap-provider", model: "doubao-seedream-5.0-pro" },
+      credentials: { apiKey: "test-key" },
+      log: null,
+    });
+
+    expect(result.success).toBe(true);
+    expect(global.fetch).toHaveBeenCalledWith(
+      "https://ark.cn-beijing.volces.com/api/plan/v3/images/generations",
+      expect.objectContaining({ method: "POST" })
+    );
+    const sent = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(sent.image).toBe("https://example.com/ref.png");
+  });
+
+  it("merges images array + image into the upstream image field (array for many)", async () => {
+    global.fetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ created: 1, data: [{ url: "https://example.com/out.png" }] }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const result = await handleImageGenerationCore({
+      body: {
+        prompt: "combine them",
+        images: ["https://example.com/a.png"],
+        image: "https://example.com/b.png",
+      },
+      modelInfo: { provider: "ark-ap-provider", model: "doubao-seedream-5.0-flash" },
+      credentials: { apiKey: "test-key" },
+      log: null,
+    });
+
+    expect(result.success).toBe(true);
+    const sent = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(sent.image).toEqual(["https://example.com/a.png", "https://example.com/b.png"]);
+  });
+
+  it("does not forward image for OpenAI-compatible providers without imageEdit", async () => {
+    global.fetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ created: 1, data: [{ url: "https://example.com/out.png" }] }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const result = await handleImageGenerationCore({
+      body: { prompt: "plain t2i", image: "https://example.com/ref.png" },
+      modelInfo: { provider: "openai", model: "dall-e-3" },
+      credentials: { apiKey: "test-key" },
+      log: null,
+    });
+
+    expect(result.success).toBe(true);
+    const sent = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(sent.image).toBeUndefined();
+  });
+
+  it("registers open-design images and falls back to its defaultSize", async () => {
+    global.fetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ created: 1, data: [{ url: "https://example.com/out.png" }] }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const result = await handleImageGenerationCore({
+      body: { prompt: "a poster" },
+      modelInfo: { provider: "open-design", model: "seedream-5.0" },
+      credentials: { apiKey: "test-key" },
+      log: null,
+    });
+
+    expect(result.success).toBe(true);
+    expect(global.fetch).toHaveBeenCalledWith(
+      "https://amr-link.open-design.ai/v1/images/generations",
+      expect.objectContaining({ method: "POST" })
+    );
+    const sent = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(sent.size).toBe("2048x2048");
+  });
 });

@@ -148,20 +148,30 @@ export default {
     // Muse
     { id: "muse-spark-1.3", name: "Muse Spark 1.3" },
     { id: "muse-wonder", name: "Muse Wonder" },
-    // Image generation (/v1/images/generations)
-    { id: "seedream-5.0", name: "Seedream 5 Lite", kind: "image", params: ["n", "size"] },
-    { id: "seedream-5.0-pro", name: "Seedream 5 Pro", kind: "image", params: ["n", "size"] },
-    { id: "nano-banana-2", name: "Nano Banana 2", kind: "image", params: ["n", "size"] },
-    { id: "nano-banana-2-lite", name: "Nano Banana 2 Lite", kind: "image", params: ["n", "size"] },
-    { id: "gpt-image-2", name: "GPT Image 2", kind: "image", params: ["n", "size", "quality", "response_format"] },
+    // Image generation (/v1/images/generations). All five upstream models take an
+    // input image for editing — Seedream / NanoBanana via reference images (multi),
+    // GPT Image via edits — and the gateway catalog lists them with
+    // input_modalities ["text","image"]. Probed 2026-10-31, though: the gateway
+    // DROPS `image`/`images` on this surface (reference silently ignored, output
+    // is plain t2i) and /v1/images/edits answers 404 — so `edit` here describes
+    // the models, not a working gateway passthrough yet. Re-probe before trusting
+    // the ref-image UI on this provider.
+    { id: "seedream-5.0", name: "Seedream 5 Lite", kind: "image", capabilities: ["text2img", "edit", "multiImage"], params: ["n", "size"] },
+    { id: "seedream-5.0-pro", name: "Seedream 5 Pro", kind: "image", capabilities: ["text2img", "edit", "multiImage"], params: ["n", "size"] },
+    { id: "nano-banana-2", name: "Nano Banana 2", kind: "image", capabilities: ["text2img", "edit", "multiImage"], params: ["n", "size"] },
+    { id: "nano-banana-2-lite", name: "Nano Banana 2 Lite", kind: "image", capabilities: ["text2img", "edit", "multiImage"], params: ["n", "size"] },
+    { id: "gpt-image-2", name: "GPT Image 2", kind: "image", capabilities: ["text2img", "edit"], params: ["n", "size", "quality", "response_format"] },
   ],
   serviceKinds: ["llm", "image"],
-  // Seedream 5 (non-pro) rejects anything under 3.68 MP ("size must be at least
-  // 3686400 pixels"), so the default has to clear that bar; every image id on
-  // the gateway accepts 2048x2048.
+  // Default 2048x2048: upstream Seedream 5 rejects <3.68 MP ("size must be at
+  // least 3686400 pixels" — 1920x1920 is the exact floor), so no legal 1K
+  // request exists for seedream here even though the plan page caps od at 1K.
+  // 2048x2048 served fine in live tests 2026-10-31 (gateway not enforcing the
+  // plan cap yet); 1024x1024 answers provider_error.
   imageConfig: {
     baseUrl: "https://amr-link.open-design.ai/v1/images/generations",
     defaultSize: "2048x2048",
+    imageEdit: true,
   },
   modelsFetcher: { url: "https://amr-link.open-design.ai/v1/models", type: "openai" },
   passthroughModels: true,

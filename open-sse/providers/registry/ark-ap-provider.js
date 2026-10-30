@@ -87,5 +87,8 @@ export default {
   imageConfig: {
     baseUrl: "https://ark.cn-beijing.volces.com/api/plan/v3/images/generations",
     defaultSize: "1536x1536",
+    // AgentPlan Seedream accepts I2I on this endpoint: `image` as a string (one
+    // reference) or an array (many, ≤10/≤14 by model), URL or base64 data URI.
+    imageEdit: true,
   },
 };

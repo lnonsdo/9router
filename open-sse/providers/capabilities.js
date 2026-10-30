@@ -490,6 +490,10 @@ export const PROVIDER_CAPABILITIES = {
 // The table is keyed by provider id, but combo/capacity paths and user model
 // strings still spell this provider with its historical alias.
 PROVIDER_CAPABILITIES.opendesign = PROVIDER_CAPABILITIES["open-design"];
+// /v1/models* lists index by the registry uiAlias ("od"), so mirror it too or
+// every od image model reports capabilities:null on the model routes.
+PROVIDER_CAPABILITIES.od = PROVIDER_CAPABILITIES["open-design"];
+PROVIDER_CAPABILITIES["ark-ap"] = PROVIDER_CAPABILITIES["ark-ap-provider"];
 
 // Qoder model capability table. The model ids are opaque (`dmodel`, `kmodel`,
 // `qmodel_38max`), so the name heuristics in PATTERN_CAPABILITIES match none of
