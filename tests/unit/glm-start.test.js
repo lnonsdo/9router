@@ -151,7 +151,9 @@ describe("GlmStartExecutor", () => {
   it("presents the minimal plugin-verified fingerprint headers", async () => {
     const result = await run();
 
-    expect(result.headers["user-agent"]).toMatch(/^ZCode\//);
+    // PINNED — the gateway refuses UA versions it cannot pair with the identity
+    // era (ZCode/3.17.1 = 405, ZCode/3.16.3 = 200, P12/P13 probes 2026-10-31)
+    expect(result.headers["user-agent"]).toBe("ZCode/3.16.3");
     expect(result.headers["http-referer"]).toBe("https://zcode.z.ai");
     expect(result.headers["x-device-mid"]).toMatch(/^[0-9a-f-]{36}$/);
     // the full official header family + non-Electron TLS reads as a spoofed
@@ -328,21 +330,20 @@ describe("GlmStartExecutor request-body admission (3012 gate)", () => {
     }
   });
 
-  it("explains 3012 risk-control blocks without conflating the three actors", () => {
+  it("explains 3012 with the verified UA-version trigger", () => {
     const parsed = executor.parseError(
       { status: 405 },
       '{"code":3012,"msg":"request has been blocked due to unusual activity."}',
     );
     expect(parsed.status).toBe(405);
     expect(parsed.message).toContain("3012");
-    // temporary rejection windows — identical shapes pass again hours later
-    expect(parsed.message).toContain("rejection windows");
-    expect(parsed.message).toContain("hours later");
-    // …the local lock is ours and self-service unlockable…
+    // the verified trigger: UA versions the gate refuses
+    expect(parsed.message).toContain("ZCode/3.17.1");
+    expect(parsed.message).toContain("ZCode/3.16.3");
+    expect(parsed.message).toContain("pins the wire UA");
+    // the local lock is ours and self-service unlockable
     expect(parsed.message).toContain("locked this connection");
     expect(parsed.message).toContain("Test");
-    // …and failure across hours means rule drift, not account trouble
-    expect(parsed.message).toContain("admission rules likely changed");
   });
 });
 

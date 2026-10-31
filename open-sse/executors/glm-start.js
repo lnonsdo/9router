@@ -22,7 +22,13 @@ import os from "node:os";
 // `X-Device-Mid` is required by the billing endpoints (400 code 3001 without)
 // and harmless on messages; its VALUE is unvalidated, so we derive a stable
 // per-JWT UUID. Connection page header overrides still win over all defaults.
-const ZCODE_APP_VERSION = process.env.ZCODE_APP_VERSION || "3.16.3";
+// The wire UA version is PINNED, not env-driven: the desktop shell injects
+// ZCODE_APP_VERSION=<installed ZCode version>, and the gateway refuses UA
+// versions it cannot pair with the identity-block era — ZCode/3.17.1 = 405 +
+// 3012, ZCode/3.16.3 = 200 on the byte-identical request (P12/P13 probes,
+// 2026-10-31). That version flip is what broke the channel on 10-30. Bump
+// ZCODE_UA_VERSION only after a live probe confirms the gate accepts it.
+const ZCODE_UA_VERSION = process.env.ZCODE_UA_VERSION || "3.16.3";
 const ZCODE_BASE_URL = "https://zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages";
 
 function uuidFromSeed(seed) {
@@ -45,7 +51,7 @@ function zcodeSourceHeaders() {
   // from the UI still apply on top.
   return {
     "http-referer": "https://zcode.z.ai",
-    "user-agent": `ZCode/${ZCODE_APP_VERSION}`,
+    "user-agent": `ZCode/${ZCODE_UA_VERSION}`,
   };
 }
 
@@ -159,22 +165,21 @@ export class GlmStartExecutor extends DefaultExecutor {
     return transformed;
   }
 
-  // Make 3012 self-explanatory — and keep the actors separate: the Z.AI gate
-  // opens TEMPORARY rejection windows (verified 2026-10-30/31: an identical
-  // byte-shape 3012'd at 21:22 UTC and passed at 04:22 UTC), so the right move
-  // is waiting, not retrying; the local lock is ours; rule drift is the
-  // fallback hypothesis when windows stop closing.
+  // Make 3012 self-explanatory — the verified trigger (2026-10-31) is the UA
+  // version string: the gate refuses versions it cannot pair with the identity
+  // era (ZCode/3.17.1 = 405, ZCode/3.16.3 = 200, byte-identical request). The
+  // wire UA is pinned, so a fresh 3012 means the gate moved again.
   parseError(response, bodyText) {
     const base = super.parseError(response, bodyText);
     if (/3012|unusual activity/i.test(bodyText || "")) {
       return {
         ...base,
-        message: "Z.AI risk control rejected this request (3012 unusual activity). The gateway opens "
-          + "temporary rejection windows during which every request bounces — identical shapes pass "
-          + "again hours later, so wait 1-2h and probe ONCE with the connection Test instead of retrying. "
-          + "9router has locked this connection for 1h; a passing Test clears the lock sooner. "
-          + "If tests keep failing across hours, the admission rules likely changed — check the "
-          + "upstream reference implementation.",
+        message: "Z.AI risk control rejected this request (3012 unusual activity). Verified trigger "
+          + "(2026-10-31): user-agent versions the gate refuses — ZCode/3.17.1 = 405, ZCode/3.16.3 = 200 "
+          + "on the byte-identical request — so 9router pins the wire UA to the accepted version. "
+          + "A fresh 3012 on the pinned version means the gate moved again: wait 1-2h, re-test once, "
+          + "then check the upstream reference implementation. "
+          + "9router has locked this connection for 1h; a passing Test clears the lock sooner.",
       };
     }
     return base;
