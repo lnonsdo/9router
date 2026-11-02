@@ -26,6 +26,43 @@ listed here, so treat this list as the source of truth.
 - Shared UI additions to support the desktop shell: `TrafficLights.js`, `CloseConfirmModal.js`,
   tray/lightweight-mode handling in `DashboardLayout.js`, and a self-hosted `open` launcher tweak.
 
+### 🫥 Tray quota panel — in-use sorting + topology aperture (2026-11-03)
+
+The tray popover (`/quota-panel`, the webview behind the tray icon) gained live "who is
+serving requests" ordering and a miniature of the usage page's topology, scaled to the
+360px popover.
+
+- `feat(tray): sort in-use providers first and add a topology aperture` —
+  `src/app/quota-panel/page.js` + new `src/app/quota-panel/TopologyAperture.js`.
+  **Zero upstream merge surface**: the whole `src/app/quota-panel/` directory is fork-only,
+  and the `aperture-*` styles are injected by the component itself instead of `globals.css`
+  (the beam animations reuse the upstream `topology-edge-*` keyframes rather than copying them).
+- **Live activity source** — the same SSE stream the dashboard topology uses
+  (`/api/usage/stream`, pushes on every pending-request change, so a 60s quota poll would
+  miss in-flight bursts) feeds both features; a REST `/api/usage/stats` snapshot re-syncs on
+  every `panel-shown` in case the SSE connection went stale while the webview was hidden.
+- **Sorting is strictly in-flight**: tiers are in-flight (most requests first) → usable
+  (upstream priority order) → depleted sinks last. `recentRequests[0]` never sorts a
+  connection: the backend's `recentRing` is seeded from `usageHistory` with no time window
+  (`ensureRingInitialized` in `usageRepo.js`), so "most recent" can be hours old and once
+  floated stale providers to the top. It is display-only (amber beam in the aperture) and
+  expires client-side after 10 minutes (`LAST_USED_WINDOW_MS`, cleared via `setTimeout` in
+  event context — `Date.now()` inside `useMemo` trips `react-hooks/purity`). Server-side
+  `activeRequests` only count LLM proxy requests (`trackPendingRequest` is called from
+  `open-sse/handlers/chatCore.js` / `open-sse/utils/stream.js`), so quota fetches are never
+  mistaken for activity.
+- **Request → connection matching**: exact account-label match (the backend derives
+  `account` from connection name/email) → `"Account <id8>..."` connection-id-prefix match
+  (label-less connections) → provider-level fallback, the same granularity as the dashboard
+  topology (empty/`unknown` provider ids are skipped).
+- **Aperture**: hand-rolled SVG instead of React Flow — the popover stays mounted in the
+  background, so the mini-topology must stay cheap. 9Router core (pulse + count badge while
+  requests are in flight) with provider dots on an ellipse; active = cyan halo +
+  provider-colored plasma + white kame core + ping, last = amber dashed (inside the 10-min
+  window), error = red, idle = dimmed. Dots click through to the list (`scrollIntoView` +
+  1.4s ring flash); more than 13 providers collapse into a `+N` chip. Collapsible via the
+  persisted `saved.aperture` flag in `quotaPanelUiState`.
+
 ### 🔌 Volcengine / Ark integration
 - `feat: add support for volcengine agent plan provider` (`94958776`) — `ark-ap-provider.js`
 - `feat: add volcengine sso provider support` (`a5ffe519`) — `src/lib/oauth/providers/volcengine-sso.js`, `src/lib/volcengine/ssoLogin.js`
@@ -465,7 +502,8 @@ Everything else is in **fork-only files** (new paths upstream does not have), wh
 conflict: `open-sse/services/serverToolEmulator.js`, `open-sse/services/webToolsResponse.js`,
 `open-sse/services/webToolUsage.js`, `open-sse/services/webToolQuota.js`,
 `open-sse/services/usage/exa.js`, `open-sse/services/usage/tavily.js`,
-`src/lib/db/repos/webToolUsageRepo.js`, `src-tauri/` (desktop shell, incl.
+`src/lib/db/repos/webToolUsageRepo.js`, `src/app/quota-panel/` (tray popover: usage panel
+page + topology aperture), `src-tauri/` (desktop shell, incl.
 `capabilities/exa-connect.json`), `src/app/api/providers/[id]/exa-key-hint/route.js`,
 `src/sse/services/webToolsBridge.js`, `src/shared/components/WebToolsAdapterSection.js`,
 `tests/unit/webTools*.test.js`, `tests/unit/provider-spend-db.test.js`,

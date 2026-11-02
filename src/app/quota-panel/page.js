@@ -11,6 +11,7 @@ import {
   getRemainingPercentage,
   getStatusColor,
 } from "@/app/(dashboard)/dashboard/usage/components/ProviderLimits/utils";
+import TopologyAperture from "./TopologyAperture";
 
 /**
  * Usage panel — the popover behind the tray icon (Tauri shell only).
@@ -27,6 +28,9 @@ import {
  *    collapsed into a chip line. Overflow of active rows collapses too.
  *  - Data comes cache-first (instant paint) then force-refreshes on every
  *    panel-shown event and on a 60s timer.
+ *  - Request activity (in-flight / last / error) streams in live over the
+ *    same SSE endpoint the dashboard topology uses; it drives the "Topology"
+ *    aperture above the list and the connection sorting (in-use first).
  */
 
 const REFRESH_INTERVAL_MS = 60000;
@@ -38,6 +42,10 @@ const UI_STATE_KEY = "quotaPanelUiState";
 const PANEL_WIDTH = 360;
 const PANEL_MIN_HEIGHT = 340;
 const PANEL_MAX_HEIGHT = 640;
+// "Last used" is display-only (amber beam in the aperture). The backend's
+// recent ring is seeded from the DB with no time window, so recentRequests[0]
+// can be hours old — never trust it beyond this, and never sort by it.
+const LAST_USED_WINDOW_MS = 10 * 60 * 1000;
 // Console drawer
 const CONSOLE_POLL_MS = 3000;
 const CONSOLE_RENDER_MAX = 300;
@@ -62,6 +70,17 @@ function fmtNum(value) {
 
 function providerLabel(providerId) {
   return AI_PROVIDERS[providerId]?.name || providerId;
+}
+
+/** Normalize a stats/SSE payload into the panel's activity feed shape. */
+function activityFromPayload(data = {}) {
+  const last = data.recentRequests?.[0] || {};
+  return {
+    activeRequests: Array.isArray(data.activeRequests) ? data.activeRequests : [],
+    lastProvider: last.provider || "",
+    lastProviderAt: last.timestamp ? Date.parse(last.timestamp) : 0,
+    errorProvider: data.errorProvider || "",
+  };
 }
 
 /**
@@ -163,11 +182,12 @@ function MiniRow({ quota }) {
   );
 }
 
-function ConnectionGroup({ connection, entry }) {
+function ConnectionGroup({ connection, entry, activeCount = 0, flash = false }) {
   const connId = connection.id;
   const [showMoreActive, setShowMoreActive] = useState(false);
   const [showDepleted, setShowDepleted] = useState(false);
   const hydratedRef = useRef(false);
+  const providerColor = AI_PROVIDERS[connection.provider]?.color || "#6b7280";
 
   // Persist the expand state per connection so the panel reopens the way
   // the user left it.
@@ -217,13 +237,45 @@ function ConnectionGroup({ connection, entry }) {
   if (quotas.length === 0 && !entry?.message) return null;
 
   return (
-    <section className="space-y-2 rounded-lg border border-black/10 bg-black/[0.015] p-2.5 dark:border-white/10 dark:bg-white/[0.02]">
+    <section
+      data-provider-group={connection.provider}
+      className={`space-y-2 rounded-lg border border-black/10 bg-black/[0.015] p-2.5 transition-shadow dark:border-white/10 dark:bg-white/[0.02] ${
+        flash ? "ring-2 ring-primary/50" : ""
+      }`}
+      style={
+        activeCount > 0
+          ? { borderColor: `${providerColor}66`, boxShadow: `0 0 14px ${providerColor}2e` }
+          : undefined
+      }
+    >
       <header className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1.5">
-          <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOT_BG[dotColor]}`} />
+          {activeCount > 0 ? (
+            <span className="relative flex h-2 w-2 shrink-0">
+              <span
+                className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-75"
+                style={{ backgroundColor: providerColor }}
+              />
+              <span
+                className="relative inline-flex h-2 w-2 rounded-full"
+                style={{ backgroundColor: providerColor }}
+              />
+            </span>
+          ) : (
+            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOT_BG[dotColor]}`} />
+          )}
           <h3 className="truncate text-xs font-semibold text-text-primary">
             {providerLabel(connection.provider)}
           </h3>
+          {activeCount > 0 ? (
+            <span
+              className="shrink-0 rounded-full px-1.5 py-px text-[9px] font-bold"
+              style={{ backgroundColor: `${providerColor}22`, color: providerColor }}
+              title={`${activeCount} request${activeCount > 1 ? "s" : ""} in flight`}
+            >
+              ⚡{activeCount}
+            </span>
+          ) : null}
           {getConnectionLabel(connection) ? (
             <span className="truncate text-[10px] text-text-muted">
               · {getConnectionLabel(connection)}
@@ -346,7 +398,14 @@ export default function QuotaPanelPage() {
   const [consoleOpen, setConsoleOpen] = useState(false);
   const [consolePaused, setConsolePaused] = useState(false);
   const [consoleLines, setConsoleLines] = useState([]);
+  // Live request activity (in-flight / last / error providers) — feeds the
+  // topology aperture and the "in use" sorting. Primary source is the SSE
+  // stream, with a REST snapshot resync on every panel reveal.
+  const [activity, setActivity] = useState({ activeRequests: [], lastProvider: "", errorProvider: "" });
+  const [apertureOpen, setApertureOpen] = useState(true);
+  const [flashProvider, setFlashProvider] = useState(null);
   const connectionsRef = useRef([]);
+  const flashTimerRef = useRef(null);
   const headerRef = useRef(null);
   const contentRef = useRef(null);
   const logRef = useRef(null);
@@ -395,6 +454,19 @@ export default function QuotaPanelPage() {
     refreshProvider: refreshPanel,
     refreshAll: refreshPanel,
   });
+
+  // REST fallback for the activity feed: resynced on every panel reveal in
+  // case the SSE connection went stale while the webview was hidden.
+  const fetchActivitySnapshot = useCallback(async () => {
+    try {
+      const res = await fetch("/api/usage/stats?period=7d", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data) setActivity(activityFromPayload(data));
+    } catch {
+      /* SSE stays the primary feed */
+    }
+  }, []);
 
   // Initial load: cache-first for an instant paint (the panel-shown handler
   // below force-refreshes right after, since Rust also emits it on first open).
@@ -465,7 +537,10 @@ export default function QuotaPanelPage() {
   useEffect(() => {
     let unlisten;
     let cancelled = false;
-    listenDesktop("panel-shown", () => loadAll({ force: true, quiet: true })).then((fn) => {
+    listenDesktop("panel-shown", () => {
+      loadAll({ force: true, quiet: true });
+      fetchActivitySnapshot();
+    }).then((fn) => {
       if (cancelled) fn();
       else unlisten = fn;
     });
@@ -473,7 +548,28 @@ export default function QuotaPanelPage() {
       cancelled = true;
       if (unlisten) unlisten();
     };
-  }, [loadAll]);
+  }, [loadAll, fetchActivitySnapshot]);
+
+  // Live activity feed — the same SSE stream the dashboard topology uses.
+  // It pushes on every pending-request change, so the panel sees in-flight
+  // activity a 60s quota poll would miss entirely.
+  useEffect(() => {
+    let es;
+    try {
+      es = new EventSource("/api/usage/stream");
+    } catch {
+      return undefined;
+    }
+    es.onmessage = (e) => {
+      try {
+        setActivity(activityFromPayload(JSON.parse(e.data)));
+      } catch {
+        /* malformed frame — wait for the next push */
+      }
+    };
+    // EventSource reconnects (and replays a full snapshot) on its own.
+    return () => es.close();
+  }, []);
 
   // Console drawer: hydrate the persisted open state, poll while open,
   // keep the view pinned to the newest line.
@@ -501,6 +597,7 @@ export default function QuotaPanelPage() {
     try {
       const saved = JSON.parse(window.localStorage.getItem(UI_STATE_KEY) || "{}");
       if (saved.console) setConsoleOpen(true);
+      if (saved.aperture === false) setApertureOpen(false);
     } catch {
       /* defaults are fine */
     }
@@ -555,26 +652,132 @@ export default function QuotaPanelPage() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  // Connections with nothing usable left sink to the bottom of the list;
-  // healthy/most-critical ones stay on top in API (priority) order.
+  // Per-connection in-flight counts + provider-level activity sets. Requests
+  // match a connection by account label (the backend derives `account` from
+  // connection name/email, falling back to "Account <id8>..." and the bare id);
+  // when nothing matches they degrade to provider-level matching, the same
+  // granularity as the dashboard topology.
+  const activityInfo = useMemo(() => {
+    const activeByConn = {};
+    const unmatched = [];
+    for (const req of activity.activeRequests) {
+      const account = (req.account || "").trim().toLowerCase();
+      const provider = (req.provider || "").toLowerCase();
+      let matched = false;
+      if (account) {
+        for (const conn of connections) {
+          if ((getConnectionLabel(conn) || "").trim().toLowerCase() === account) {
+            activeByConn[conn.id] = (activeByConn[conn.id] || 0) + (req.count || 1);
+            matched = true;
+          }
+        }
+        // Label-less connections surface as "Account <id8>..." — match the
+        // connection id prefix before degrading to provider-level matching.
+        const idPrefix = matched ? null : account.match(/^account ([0-9a-z]+)\.{3}$/)?.[1];
+        if (idPrefix) {
+          for (const conn of connections) {
+            if ((conn.id || "").toLowerCase().startsWith(idPrefix)) {
+              activeByConn[conn.id] = (activeByConn[conn.id] || 0) + (req.count || 1);
+              matched = true;
+            }
+          }
+        }
+      }
+      if (!matched && provider && provider !== "unknown") {
+        unmatched.push({ provider, count: req.count || 1 });
+      }
+    }
+    const perProvider = {};
+    for (const u of unmatched) perProvider[u.provider] = (perProvider[u.provider] || 0) + u.count;
+    if (Object.keys(perProvider).length > 0) {
+      for (const conn of connections) {
+        const n = perProvider[(conn.provider || "").toLowerCase()];
+        if (n && !activeByConn[conn.id]) activeByConn[conn.id] = n;
+      }
+    }
+    const activeProviders = new Set(
+      activity.activeRequests.map((r) => (r.provider || "").toLowerCase()).filter(Boolean),
+    );
+    const totalActive = activity.activeRequests.reduce((n, r) => n + (r.count || 1), 0);
+    return {
+      activeByConn,
+      activeProviders,
+      totalActive,
+      lastProvider: (activity.lastProvider || "").toLowerCase(),
+      errorProvider: (activity.errorProvider || "").toLowerCase(),
+    };
+  }, [activity, connections]);
+
+  // Expire "last used" once the window passes (Date.now() only in event
+  // context — the recent ring is seeded from the DB, so without this the
+  // amber beam would point at hours-old history forever).
+  const { lastProvider, lastProviderAt } = activity;
+  useEffect(() => {
+    if (!lastProvider || !lastProviderAt) return undefined;
+    const delay = Math.max(0, lastProviderAt + LAST_USED_WINDOW_MS - Date.now());
+    const timer = setTimeout(() => {
+      setActivity((prev) =>
+        prev.lastProvider === lastProvider && prev.lastProviderAt === lastProviderAt
+          ? { ...prev, lastProvider: "", lastProviderAt: 0 }
+          : prev,
+      );
+    }, delay);
+    return () => clearTimeout(timer);
+  }, [lastProvider, lastProviderAt]);
+
+  // Connections sort in three tiers: in use right now (most in-flight first) →
+  // healthy, in API (priority) order → depleted sinks last. Only real
+  // in-flight requests float a connection; "recently used" never does (the
+  // backend's recent ring is seeded from history and can be hours old).
+  // Ties keep priority order (stable sort).
   const sortedGroups = useMemo(() => {
     const usableCount = (entry) => {
       const s = splitQuotaRows(entry?.quotas || []);
       return s.active.length + s.unlimited.length + s.balances.length;
     };
+    const { activeByConn } = activityInfo;
     return connections
       .filter((conn) => {
         const entry = quotaById[conn.id];
         return entry && (entry.quotas?.length > 0 || entry.message);
       })
       .sort((a, b) => {
-        const ua = usableCount(quotaById[a.id]);
-        const ub = usableCount(quotaById[b.id]);
-        if (ua === 0 && ub > 0) return 1;
-        if (ub === 0 && ua > 0) return -1;
+        const tier = (conn) => {
+          if ((activeByConn[conn.id] || 0) > 0) return 0;
+          return usableCount(quotaById[conn.id]) > 0 ? 1 : 2;
+        };
+        const ta = tier(a);
+        const tb = tier(b);
+        if (ta !== tb) return ta - tb;
+        if (ta === 0) return (activeByConn[b.id] || 0) - (activeByConn[a.id] || 0);
         return 0;
       });
-  }, [connections, quotaById]);
+  }, [connections, quotaById, activityInfo]);
+
+  // Ring population: visible groups deduped by provider, in list order —
+  // the aperture mirrors what the list below shows.
+  const apertureProviders = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    for (const conn of sortedGroups) {
+      const key = (conn.provider || "").toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      const config = AI_PROVIDERS[conn.provider] || {};
+      out.push({ provider: conn.provider, label: config.name || conn.provider, color: config.color || "#6b7280" });
+    }
+    return out;
+  }, [sortedGroups]);
+
+  // Dot click → scroll the list to that provider's first group and flash it.
+  const scrollToProvider = useCallback((provider) => {
+    const el = document.querySelector(`[data-provider-group="${provider}"]`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    setFlashProvider(provider);
+    clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = setTimeout(() => setFlashProvider(null), 1400);
+  }, []);
 
   // Adaptive height: measure the natural content height (header + rows +
   // footer — never the viewport-capped card, or tall content would never
@@ -653,6 +856,49 @@ export default function QuotaPanelPage() {
             </div>
           </div>
 
+          {/* Topology aperture: live provider ring, a miniature of the
+              usage page topology. Dots click through to the list below. */}
+          <div className="shrink-0 border-b border-black/10 px-2.5 py-1 dark:border-white/10">
+            <button
+              type="button"
+              onClick={() => {
+                setApertureOpen((v) => {
+                  try {
+                    const saved = JSON.parse(window.localStorage.getItem(UI_STATE_KEY) || "{}");
+                    saved.aperture = !v;
+                    window.localStorage.setItem(UI_STATE_KEY, JSON.stringify(saved));
+                  } catch {
+                    /* best effort */
+                  }
+                  return !v;
+                });
+              }}
+              className="flex w-full items-center gap-0.5 rounded-md px-1 py-0.5 text-[10px] text-text-muted transition-colors hover:text-text-primary"
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: 13 }}>
+                {apertureOpen ? "keyboard_arrow_down" : "keyboard_arrow_right"}
+              </span>
+              Topology
+              {activityInfo.totalActive > 0 ? (
+                <span className="ml-1 rounded-full bg-yellow-400/90 px-1.5 text-[9px] font-bold text-black">
+                  {activityInfo.totalActive}
+                </span>
+              ) : null}
+            </button>
+            {apertureOpen ? (
+              <div className="px-1 pb-1">
+                <TopologyAperture
+                  providers={apertureProviders}
+                  activeSet={activityInfo.activeProviders}
+                  lastProvider={activityInfo.lastProvider}
+                  errorProvider={activityInfo.errorProvider}
+                  activeCount={activityInfo.totalActive}
+                  onSelect={scrollToProvider}
+                />
+              </div>
+            ) : null}
+          </div>
+
           {/* Groups */}
           <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto px-2.5 py-3">
             <div ref={contentRef} className="space-y-2.5">
@@ -673,7 +919,13 @@ export default function QuotaPanelPage() {
                 <p className="py-8 text-center text-xs text-text-muted">No quota to display</p>
               ) : (
                 sortedGroups.map((conn) => (
-                  <ConnectionGroup key={conn.id} connection={conn} entry={quotaById[conn.id]} />
+                  <ConnectionGroup
+                    key={conn.id}
+                    connection={conn}
+                    entry={quotaById[conn.id]}
+                    activeCount={activityInfo.activeByConn[conn.id] || 0}
+                    flash={flashProvider === conn.provider}
+                  />
                 ))
               )}
             </div>
