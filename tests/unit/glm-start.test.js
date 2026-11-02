@@ -14,7 +14,7 @@ import glmStartOauthProvider from "../../src/lib/oauth/providers/glm-start.js";
 import { getProvider } from "../../src/lib/oauth/providers";
 import { PROVIDERS as TRANSPORTS, PROVIDER_OAUTH } from "../../open-sse/providers/index.js";
 import { getExecutor } from "../../open-sse/executors/index.js";
-import { GlmStartExecutor } from "../../open-sse/executors/glm-start.js";
+import { GlmStartExecutor, isWafBlockBody, WAF_RETRY_DELAYS_MS, GLM_START_SLOTS, resetGlmStartSlots } from "../../open-sse/executors/glm-start.js";
 import { OFFICIAL_CLI_PREFIX, OFFICIAL_STABLE_SECTIONS, OFFICIAL_IDENTITY_CHARS } from "../../open-sse/executors/glm-start-identity.js";
 import { getGlmStartUsage } from "../../open-sse/services/usage/glm-start.js";
 
@@ -27,6 +27,21 @@ function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "Content-Type": "application/json" },
+  });
+}
+
+// Real shape of the edge page (abridged): Aliyun WAF asset host + the hidden
+// #renderData payload the page script reads.
+const ALIYUN_WAF_405 = '<!doctype html><html lang="zh-cn"><meta name="data-spm" content="a3c0e">'
+  + '<title>405</title><style>a,body,div{...}</style>'
+  + '<script>var en_tips={block_message:"Sorry, your request has been blocked..."}</script>'
+  + '<textarea id="renderData" style="display:none">{"traceid":"0a3d3ed517936425365807536e069d","lang":"cn"}</textarea>'
+  + '<img src="https://errors.aliyun.com/images/TB15QGaHpXXXXXOaXXXXia39XXX-660-117.png"></html>';
+
+function htmlResponse(body, status) {
+  return new Response(body, {
+    status,
+    headers: { "Content-Type": "text/html; charset=utf-8" },
   });
 }
 
@@ -190,13 +205,19 @@ describe("GlmStartExecutor", () => {
 });
 
 describe("GlmStartExecutor request-body admission (3012 gate)", () => {
+  // the real WAF retry waits 1.5s + 4s — shrink it so the suite stays fast
+  const REAL_WAF_DELAYS = [...WAF_RETRY_DELAYS_MS];
+
   beforeEach(() => {
     vi.mocked(proxyAwareFetch).mockReset();
     vi.mocked(proxyAwareFetch).mockImplementation(async () => jsonResponse({ id: "msg_1", content: [] }));
+    WAF_RETRY_DELAYS_MS.splice(0, WAF_RETRY_DELAYS_MS.length, 1, 1);
+    resetGlmStartSlots();
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    WAF_RETRY_DELAYS_MS.splice(0, WAF_RETRY_DELAYS_MS.length, ...REAL_WAF_DELAYS);
   });
 
   const executor = new GlmStartExecutor("glm-start");
@@ -344,6 +365,154 @@ describe("GlmStartExecutor request-body admission (3012 gate)", () => {
     // the local lock is ours and self-service unlockable
     expect(parsed.message).toContain("locked this connection");
     expect(parsed.message).toContain("Test");
+  });
+
+  it("retries an Aliyun WAF 405 block page in place and never surfaces it", async () => {
+    vi.mocked(proxyAwareFetch)
+      .mockImplementationOnce(async () => htmlResponse(ALIYUN_WAF_405, 405))
+      .mockImplementation(async () => jsonResponse({ id: "msg_ok", content: [] }));
+
+    const result = await run({ model: "GLM-5.3-Flash", messages: [{ role: "user", content: "hi" }] });
+
+    expect(result.response.status).toBe(200);
+    expect(vi.mocked(proxyAwareFetch)).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops retrying after the WAF burst outlives the attempts and reports it plainly", async () => {
+    vi.mocked(proxyAwareFetch).mockImplementation(async () => htmlResponse(ALIYUN_WAF_405, 405));
+
+    const result = await run({ model: "GLM-5.3-Flash", messages: [{ role: "user", content: "hi" }] });
+
+    expect(result.response.status).toBe(405);
+    // 1 initial + WAF_RETRY_DELAYS_MS.length retries
+    expect(vi.mocked(proxyAwareFetch)).toHaveBeenCalledTimes(1 + WAF_RETRY_DELAYS_MS.length);
+    const parsed = executor.parseError({ status: 405 }, ALIYUN_WAF_405);
+    expect(parsed.message).toContain("Aliyun WAF");
+    // the account is never blamed for an egress-IP block
+    expect(parsed.message).toContain("not the account");
+    expect(parsed.message).toContain("account standing untouched");
+    // the ~2.5KB HTML page is never quoted back
+    expect(parsed.message).not.toContain("renderData");
+  });
+
+  it("never retries the JSON 3012 identity gate (each hit costs account standing)", () => {
+    expect(isWafBlockBody('{"code":3012,"msg":"request has been blocked due to unusual activity."}')).toBe(false);
+    expect(isWafBlockBody(ALIYUN_WAF_405)).toBe(true);
+  });
+});
+
+describe("glm-start account session slots (Start Plan = 3 concurrent sessions)", () => {
+  const executor = new GlmStartExecutor("glm-start");
+  const credentials = {
+    authType: "oauth",
+    accessToken: "oauth-access-token-unused",
+    providerSpecificData: { zcodeJwtToken: ZCODE_JWT },
+  };
+  const call = (overrides = {}) => executor.execute({
+    model: "GLM-5.3-Flash",
+    body: { model: "GLM-5.3-Flash", messages: [{ role: "user", content: "hi" }] },
+    stream: true,
+    credentials,
+    log: { debug: () => {}, info: () => {} },
+    ...overrides,
+  });
+  // let queued waiters run
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+  let realTimeout;
+  beforeEach(() => {
+    vi.mocked(proxyAwareFetch).mockReset();
+    resetGlmStartSlots();
+    realTimeout = GLM_START_SLOTS.queueTimeoutMs;
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    GLM_START_SLOTS.queueTimeoutMs = realTimeout;
+    resetGlmStartSlots();
+  });
+
+  it("keeps at most 3 upstream sessions in flight and admits the 4th when one ends", async () => {
+    const gates = [];
+    vi.mocked(proxyAwareFetch).mockImplementation(() => new Promise((resolve) => gates.push(resolve)));
+
+    const runs = [1, 2, 3, 4].map(() => call());
+    await tick();
+    // the 4th request has NOT hit the wire — it is queued for a slot
+    expect(gates).toHaveLength(3);
+
+    // finish #1: its SSE body ends → its slot is handed to the queued #4
+    gates[0](new Response("data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } }));
+    const first = await runs[0];
+    await first.response.text();
+    await tick();
+    expect(gates).toHaveLength(4);
+
+    for (let i = 1; i < gates.length; i++) {
+      gates[i](new Response("data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } }));
+    }
+    for (const run of runs.slice(1)) await (await run).response.text();
+  });
+
+  it("counts slots per connection — another account is unaffected", async () => {
+    const gates = [];
+    vi.mocked(proxyAwareFetch).mockImplementation(() => new Promise((resolve) => gates.push(resolve)));
+
+    const other = { ...credentials, connectionId: "glm-start-b" };
+    const runs = [call(), call(), call(), call({ credentials: other })];
+    await tick();
+
+    // 3 slots full on account A, but account B has its own budget
+    expect(gates).toHaveLength(4);
+
+    gates.forEach((resolve, i) => resolve(jsonResponse({ id: `msg_${i}`, content: [] })));
+    for (const run of runs) await (await run).response.text();
+  });
+
+  it("yields to account fallback with a 3008 body when every slot stays busy", async () => {
+    GLM_START_SLOTS.queueTimeoutMs = 30;
+    const gates = [];
+    vi.mocked(proxyAwareFetch).mockImplementation(() => new Promise((resolve) => gates.push(resolve)));
+
+    const runs = [call(), call(), call()];
+    await tick();
+    expect(gates).toHaveLength(3);
+
+    // 4th waits 30ms, gets no slot, and reports the upstream's own error shape
+    const queued = await call();
+    expect(queued.response.status).toBe(429);
+    const body = await queued.response.text();
+    expect(body).toContain("3008");
+    expect(body).toContain("concurrency limit");
+
+    gates.forEach((resolve) => resolve(jsonResponse({ id: "msg_ok", content: [] })));
+    for (const run of runs) await (await run).response.text();
+  });
+
+  it("frees the slot when the stream errors instead of leaking it", async () => {
+    let firstGate;
+    vi.mocked(proxyAwareFetch).mockImplementationOnce(() => new Promise((resolve) => { firstGate = resolve; }));
+    const errored = call();
+    await tick();
+
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("data: {}\n\n"));
+        setTimeout(() => controller.error(new Error("upstream reset")), 5);
+      },
+    });
+    firstGate(new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } }));
+    const result = await errored;
+    await expect(result.response.text()).rejects.toThrow();
+
+    // slot is back: three fresh calls go straight to the wire
+    const gates = [];
+    vi.mocked(proxyAwareFetch).mockReset();
+    vi.mocked(proxyAwareFetch).mockImplementation(() => new Promise((resolve) => gates.push(resolve)));
+    const runs = [call(), call(), call()];
+    await tick();
+    expect(gates).toHaveLength(3);
+    gates.forEach((resolve) => resolve(jsonResponse({ id: "ok", content: [] })));
+    for (const run of runs) await (await run).response.text();
   });
 });
 

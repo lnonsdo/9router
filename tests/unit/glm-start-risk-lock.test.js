@@ -145,8 +145,7 @@ describe("glm-start risk-control lock (3012)", () => {
     }
   });
 
-  it("prunes ledger hits older than the 24h window", async () => {
-    vi.useFakeTimers();
+  it("prunes ledger hits older than the 24h window", async () => {    vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-10-24T05:00:00.000Z"));
     dbMocks.getProviderConnections.mockResolvedValue([{
       id: "glm-start-a",
@@ -166,5 +165,59 @@ describe("glm-start risk-control lock (3012)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// Aliyun WAF (edge in front of zcode.z.ai) answers request bursts with an HTML
+// 405 page. Verified 2026-11-03: the same body is admitted seconds later, so it
+// is a transient throttle — it must never reach the 3012 fuse.
+const ALIYUN_WAF_405 = '<!doctype html><html lang="zh-cn"><meta name="data-spm" content="a3c0e">'
+  + '<title>405</title><textarea id="renderData" style="display:none">{"traceid":"0a3d3ed5"}</textarea>'
+  + '<img src="https://errors.aliyun.com/images/TB15QGaHpXXXXXOaXXXXia39XXX-660-117.png"></html>';
+
+describe("glm-start edge WAF throttle (HTML 405)", () => {
+  it("does not count it as a risk hit and never disables the connection", async () => {
+    dbMocks.getProviderConnections.mockResolvedValue([{
+      id: "glm-start-a",
+      provider: "glm-start",
+      name: "glm-start-a",
+      backoffLevel: 0,
+      riskControlHits: ["2026-11-02T18:02:10.549Z", "2026-11-02T18:02:14.685Z"],
+    }]);
+
+    const result = await markAccountUnavailable("glm-start-a", 405, ALIYUN_WAF_405, "glm-start", "GLM-5.3-Flash");
+
+    const update = dbMocks.updateProviderConnection.mock.calls[0][1];
+    // short model-scoped cool-off, ledger untouched, still enabled
+    expect(result.shouldFallback).toBe(true);
+    expect(update).toHaveProperty("modelLock_GLM-5.3-Flash");
+    expect(update).not.toHaveProperty("modelLock___all");
+    expect(update.riskControlHits).toBeUndefined();
+    expect(update.isActive).toBeUndefined();
+    // a shed is not a health signal — the card must not flicker red
+    expect(update.testStatus).toBeUndefined();
+    expect(update.errorCode).toBeUndefined();
+  });
+
+  it("keeps the 1h account-wide lock for the real 3012 JSON gate", async () => {
+    dbMocks.getProviderConnections.mockResolvedValue([{
+      id: "glm-start-a",
+      provider: "glm-start",
+      name: "glm-start-a",
+      backoffLevel: 0,
+    }]);
+
+    await markAccountUnavailable(
+      "glm-start-a",
+      405,
+      '{"code":3012,"msg":"request has been blocked due to unusual activity."}',
+      "glm-start",
+      "GLM-5.3-Flash",
+    );
+
+    const update = dbMocks.updateProviderConnection.mock.calls[0][1];
+    expect(update).toHaveProperty("modelLock___all");
+    expect(update.riskControlHits).toHaveLength(1);
+    expect(update.testStatus).toBe("unavailable");
   });
 });

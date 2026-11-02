@@ -36,10 +36,14 @@ const glmStart = {
     format: "claude",
     // captured official-client shape: only anthropic-version, no beta flags
     headers: { "anthropic-version": "2023-06-01" },
-    // Start Plan enforces concurrency 1 per model and sheds load as 429
-    // "model concurrency limit exceeded" (z.ai 3009; global capacity event
-    // 2026-10-27 also surfaces as system-busy). Collisions clear in seconds —
-    // wait and re-probe inside the executor instead of failing to the client.
+    // Start Plan allows 3 concurrent SESSIONS per account. Over that it answers
+    // 429 {"code":3008,"msg":"user concurrency limit exceeded"}; 3009 is the
+    // model-level sibling (capacity events, e.g. 2026-10-27) and has not been
+    // seen since. The budget is per ACCOUNT, not per router: the same account
+    // used on a second machine eats into the same 3 slots, which is why 3008
+    // can fire here with only 1-2 local requests in flight. Collisions clear in
+    // seconds — wait and re-probe inside the executor instead of failing to the
+    // client.
     retry: {
       429: { attempts: 3, delayMs: 3000 },
     },

@@ -29,6 +29,14 @@ const RISK_CONTROL_COOLDOWN_MS = 60 * 60 * 1000;
 const RISK_HIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 const RISK_HITS_AUTO_DISABLE = 3;
 
+// Aliyun WAF (the edge in front of zcode.z.ai) answers with an HTML 405 page
+// on the messages path for egress IPs it has flagged — probes 2026-11-03 show
+// the decision is IP × path (other paths still reach the origin, and an
+// unauthenticated request gets the same page), so it says nothing about the
+// account. It only cools the model briefly, never touches the risk ledger and
+// never disables the connection.
+const WAF_THROTTLE_COOLDOWN_MS = 10 * 1000;
+
 function githubMonthlyResetMs(status, errorText, provider) {
   if (resolveProviderId(provider) !== "github" || Number(status) !== 402) return null;
   if (!String(errorText || "").toLowerCase().includes(GITHUB_MONTHLY_USAGE_LIMIT)) return null;
@@ -273,12 +281,28 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
 
   // Provider-specific precise cooldown (e.g. codex usage_limit_reached resets_at) overrides backoff
   const errorTextStr = typeof errorText === "string" ? errorText : "";
+  // glm-start has TWO different 405s and they mean opposite things:
+  //  - JSON {"code":3012,...} / "unusual activity" = the zcode-plan identity
+  //    gate → account standing at risk, 1h account-wide lock + hit ledger.
+  //  - an HTML page from Aliyun WAF in front of zcode.z.ai = the egress IP is
+  //    blocked for the messages path (probes 2026-11-03: unauthenticated GET
+  //    gets the same page, sibling paths still reach the origin). Verified cost
+  //    of conflating them: both connections were disabled within 6s while 87
+  //    requests in the same window succeeded.
+  const wafBlockPage = /aliyun\.com|renderData|<!doctypehtml/i.test(errorTextStr);
   const riskControlled = provider === "glm-start"
-    && (Number(status) === 405 || /unusual activity|\b3012\b/.test(errorTextStr));
+    && (/unusual activity|\b3012\b/.test(errorTextStr) || (Number(status) === 405 && !wafBlockPage));
+  const wafThrottled = provider === "glm-start" && Number(status) === 405 && wafBlockPage;
   let shouldFallback, cooldownMs, newBackoffLevel;
   if (riskControlled) {
     shouldFallback = true;
     cooldownMs = RISK_CONTROL_COOLDOWN_MS;
+    newBackoffLevel = 0;
+  } else if (wafThrottled) {
+    // Short, model-scoped cool-off so the request can fall to another account
+    // (and the executor's own retries already absorbed most of these).
+    shouldFallback = true;
+    cooldownMs = WAF_THROTTLE_COOLDOWN_MS;
     newBackoffLevel = 0;
   } else if (githubResetAtMs) {
     shouldFallback = true;
@@ -309,15 +333,16 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     autoDisabled = riskHits.length >= RISK_HITS_AUTO_DISABLE;
   }
 
-  const reason = typeof errorText === "string" ? errorText.slice(0, 200) : "Provider error";
+  const reason = wafThrottled
+    ? "Edge (Aliyun WAF) blocks the messages path for this egress IP — HTML 405 page, account standing untouched"
+    : typeof errorText === "string" ? errorText.slice(0, 200) : "Provider error";
   const lockUpdate = buildModelLockUpdate((githubResetAtMs || riskControlled) ? null : model, cooldownMs);
 
   await updateProviderConnection(connectionId, {
     ...lockUpdate,
-    testStatus: "unavailable",
-    lastError: reason,
-    errorCode: status,
-    lastErrorAt: new Date().toISOString(),
+    // A WAF shed is not a health signal: leave the connection's status/error
+    // untouched so brief bursts don't flicker it red in the dashboard.
+    ...(wafThrottled ? {} : { testStatus: "unavailable", lastError: reason, errorCode: status, lastErrorAt: new Date().toISOString() }),
     backoffLevel: newBackoffLevel ?? backoffLevel,
     ...(riskHits !== null ? { riskControlHits: riskHits.map((t) => new Date(t).toISOString()) } : {}),
     ...(autoDisabled ? { isActive: false } : {}),
