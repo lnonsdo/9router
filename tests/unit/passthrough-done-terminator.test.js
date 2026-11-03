@@ -37,6 +37,9 @@ const CLAUDE_SSE = [
   'event: message_stop\ndata: {"type":"message_stop"}\n\n',
 ].join("");
 
+// Same turn, cut before the terminal event — what a gateway deadline looks like.
+const CLAUDE_TRUNCATED_SSE = CLAUDE_SSE.replace('event: message_stop\ndata: {"type":"message_stop"}\n\n', "");
+
 const OPENAI_CHUNK = 'data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}\n\n';
 const OPENAI_STOP = 'data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n';
 
@@ -55,6 +58,26 @@ describe("passthrough stream terminal events", () => {
       onStreamComplete: (content) => { completed = content; },
     });
     expect(completed).toEqual({ content: "Hello", thinking: "" });
+  });
+
+  it("reports a Claude stream that ended without message_stop as truncated", async () => {
+    let meta = null;
+    await runPassthrough({
+      sourceFormat: "claude",
+      sse: CLAUDE_TRUNCATED_SSE,
+      onStreamComplete: (_content, _usage, _ttft, m) => { meta = m; },
+    });
+    expect(meta).toEqual({ truncated: true });
+  });
+
+  it("does not report a Claude stream that reached message_stop as truncated", async () => {
+    let meta = null;
+    await runPassthrough({
+      sourceFormat: "claude",
+      sse: CLAUDE_SSE,
+      onStreamComplete: (_content, _usage, _ttft, m) => { meta = m; },
+    });
+    expect(meta).toEqual({ truncated: false });
   });
 
   it("does not duplicate [DONE] when the OpenAI upstream already sent one", async () => {

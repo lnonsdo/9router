@@ -131,6 +131,21 @@ function normalizeString(value) {
   return String(value).trim();
 }
 
+// Node's fetch wraps every transport error as "fetch failed"; the real
+// reason (ECONNREFUSED, Connect Timeout, ...) lives on err.cause. Walk the
+// chain so proxy failures are diagnosable from logs alone.
+function describeErrorChain(err) {
+  const seen = new Set();
+  const parts = [];
+  let cur = err;
+  while (cur && !seen.has(cur) && parts.length < 4) {
+    seen.add(cur);
+    parts.push(cur.code ? `${cur.message || cur} [${cur.code}]` : (cur.message || String(cur)));
+    cur = cur.cause;
+  }
+  return parts.join(" <- ") || "unknown error";
+}
+
 /**
  * Resolve real IP using Google DNS (bypass system DNS)
  */
@@ -163,16 +178,90 @@ function shouldBypassMitmDns(url) {
   } catch { return false; }
 }
 
-function shouldBypassByNoProxy(targetUrl, noProxyValue) {
+// Parse an IPv4/IPv6 literal into a { value, bits } pair. Returns null for
+// anything else — hostnames are never resolved, so NO_PROXY stays DNS-free.
+function parseIpLiteral(input) {
+  const ip = normalizeString(input).toLowerCase().split("%")[0];
+  if (!ip) return null;
+
+  if (!ip.includes(":")) {
+    const parts = ip.split(".");
+    if (parts.length !== 4) return null;
+    let value = 0n;
+    for (const part of parts) {
+      if (!/^\d{1,3}$/.test(part) || Number(part) > 255) return null;
+      value = (value << 8n) | BigInt(Number(part));
+    }
+    return { value, bits: 32 };
+  }
+
+  // IPv6 — rewrite an embedded IPv4 suffix (::ffff:1.2.3.4) into hex groups
+  let rest = ip;
+  const v4Tail = /:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(ip);
+  if (v4Tail) {
+    const v4 = parseIpLiteral(v4Tail[1]);
+    if (!v4) return null;
+    const hi = (v4.value >> 16n) & 0xffffn;
+    const lo = v4.value & 0xffffn;
+    rest = `${ip.slice(0, v4Tail.index + 1)}${hi.toString(16)}:${lo.toString(16)}`;
+  }
+
+  const halves = rest.split("::");
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const pad = halves.length === 2 ? 8 - head.length - tail.length : 0;
+  // "::" must stand for at least one group; without it exactly 8 groups remain
+  if (pad < (halves.length === 2 ? 1 : 0) || (halves.length === 1 && head.length !== 8)) return null;
+  const groups = [...head, ...Array(pad).fill("0"), ...tail];
+
+  let value = 0n;
+  for (const group of groups) {
+    if (!/^[0-9a-f]{1,4}$/.test(group)) return null;
+    value = (value << 16n) | BigInt(parseInt(group, 16));
+  }
+  return { value, bits: 128 };
+}
+
+function ipEquals(a, b) {
+  const pa = parseIpLiteral(a);
+  if (!pa) return false;
+  const pb = parseIpLiteral(b);
+  return !!pb && pb.bits === pa.bits && pb.value === pa.value;
+}
+
+function ipMatchesCidr(ipLiteral, cidr) {
+  const slash = cidr.lastIndexOf("/");
+  if (slash === -1) return false;
+  const range = parseIpLiteral(cidr.slice(0, slash));
+  const target = parseIpLiteral(ipLiteral);
+  if (!range || !target || range.bits !== target.bits) return false;
+  const prefixRaw = cidr.slice(slash + 1);
+  if (!/^\d{1,3}$/.test(prefixRaw)) return false;
+  const prefix = Number(prefixRaw);
+  if (prefix > range.bits) return false;
+  if (prefix === 0) return true;
+  const mask = ((1n << BigInt(prefix)) - 1n) << BigInt(range.bits - prefix);
+  return (target.value & mask) === (range.value & mask);
+}
+
+export function shouldBypassByNoProxy(targetUrl, noProxyValue) {
   const noProxy = normalizeString(noProxyValue);
   if (!noProxy) return false;
 
   let hostname;
   try { hostname = new URL(targetUrl).hostname.toLowerCase(); } catch { return false; }
+  // URL keeps IPv6 hosts bracketed ([::1]) — match bare patterns too
+  if (hostname.startsWith("[") && hostname.endsWith("]")) hostname = hostname.slice(1, -1);
   const patterns = noProxy.split(",").map((p) => p.trim().toLowerCase()).filter(Boolean);
 
   return patterns.some((pattern) => {
     if (pattern === "*") return true;
+    if (pattern.includes("/")) {
+      // CIDR ranges (192.168.0.0/16, fd00::/7) match literal-IP targets only
+      return ipMatchesCidr(hostname, pattern);
+    }
+    if (ipEquals(pattern, hostname)) return true;
     if (pattern.startsWith(".")) return hostname.endsWith(pattern) || hostname === pattern.slice(1);
     return hostname === pattern || hostname.endsWith(`.${pattern}`);
   });
@@ -362,9 +451,9 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
         return await fetchWithTlsFallback(url, options, proxyUrl);
       } catch (proxyError) {
         if (proxyOptions?.strictProxy === true) {
-          throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`);
+          throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${describeErrorChain(proxyError)}`);
         }
-        console.warn(`[ProxyFetch] Proxy failed, falling back to direct bypass: ${proxyError.message}`);
+        console.warn(`[ProxyFetch] Proxy failed, falling back to direct bypass: ${describeErrorChain(proxyError)}`);
       }
     }
     // No proxy — manually resolve real IP to bypass DNS spoof
@@ -383,9 +472,9 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
     } catch (proxyError) {
       // If strictProxy is enabled, fail hard instead of falling back to direct
       if (proxyOptions?.strictProxy === true) {
-        throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`);
+        throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${describeErrorChain(proxyError)}`);
       }
-      console.warn(`[ProxyFetch] Proxy failed, falling back to direct: ${proxyError.message}`);
+      console.warn(`[ProxyFetch] Proxy failed, falling back to direct: ${describeErrorChain(proxyError)}`);
       return fetchWithTlsFallback(url, options, null);
     }
   }

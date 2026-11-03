@@ -59,7 +59,8 @@ const PENDING_COMPLETION_FLUSH_MS = 3000;
  * @param {string} options.model - Model name
  * @param {string} options.connectionId - Connection ID for usage tracking
  * @param {object} options.body - Request body (for input token estimation)
- * @param {function} options.onStreamComplete - Callback when stream completes (content, usage)
+ * @param {function} options.onStreamComplete - Callback when stream completes (content, usage, ttftAt, meta)
+ *   `meta.truncated` is true when a Claude passthrough stream ended without message_stop.
  * @param {string} options.apiKey - API key for usage tracking
  */
 export function createSSEStream(options = {}) {
@@ -114,6 +115,10 @@ export function createSSEStream(options = {}) {
   let openAIResponsesTerminalSeen = false;
   let openAIResponsesDoneSent = false;
   let streamDoneSent = false;  // track duplicate [DONE] across transform + flush
+  // Claude streams end on their own message_stop; keepalives are forwarded as-is,
+  // so an upstream that dies mid-turn (deadline, dropped socket) looks identical
+  // to a finished one once the connection closes. Reported to the caller instead.
+  let claudeTerminalSeen = false;
   let finalized = false;
   let completionFlushTimer = null;
 
@@ -148,7 +153,11 @@ export function createSSEStream(options = {}) {
       onStreamComplete({
         content: accumulatedContent,
         thinking: accumulatedThinking
-      }, finalUsage, ttftAt);
+      }, finalUsage, ttftAt, {
+        // Only passthrough Claude tracks the terminal event; translate mode closes
+        // the stream with its own terminal chunk and never sees message_stop here.
+        truncated: sourceFormat === FORMATS.CLAUDE && mode === STREAM_MODE.PASSTHROUGH && !claudeTerminalSeen
+      });
     }
   };
 
@@ -343,6 +352,11 @@ export function createSSEStream(options = {}) {
               if (parsed.usage) {
                 const extracted = extractUsage(parsed);
                 if (extracted) usage = mergeUsage(usage, extracted);
+              }
+
+              // Claude's own terminal event — see claudeTerminalSeen above.
+              if (sourceFormat === FORMATS.CLAUDE && parsed.type === "message_stop") {
+                claudeTerminalSeen = true;
               }
 
               // Claude wire: the OpenAI-shaped accumulation below never sees

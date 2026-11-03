@@ -134,7 +134,10 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
 export function buildOnStreamComplete({ provider, model, connectionId, sessionId, apiKey, requestStartTime, body, stream, finalBody, translatedBody, clientRawRequest, pxpipe, reqTag, log }) {
   const streamDetailId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 
-  const onStreamComplete = (contentObj, usage, ttftAt) => {
+  // `meta.truncated` comes from createSSEStream: the upstream closed a Claude
+  // stream without message_stop. The bytes are already gone to the client, so the
+  // only thing left to do is record the turn as failed instead of a clean success.
+  const onStreamComplete = (contentObj, usage, ttftAt, meta) => {
     const latency = {
       ttft: ttftAt ? ttftAt - requestStartTime : Date.now() - requestStartTime,
       total: Date.now() - requestStartTime
@@ -149,9 +152,11 @@ export function buildOnStreamComplete({ provider, model, connectionId, sessionId
       request: extractRequestConfig(body, stream),
       providerRequest: finalBody || translatedBody || null,
       providerResponse: safeContent,
-      response: { content: safeContent, thinking: safeThinking, type: "streaming" },
+      response: meta?.truncated
+        ? { content: safeContent, thinking: safeThinking, type: "streaming", error: "upstream closed the stream without message_stop" }
+        : { content: safeContent, thinking: safeThinking, type: "streaming" },
       pxpipe,
-      status: "success"
+      status: meta?.truncated ? "error" : "success"
     }, { id: streamDetailId })).catch(err => {
       console.error("[RequestDetail] Failed to update streaming content:", err.message);
     });

@@ -48,6 +48,17 @@ export function resolveCaps(byFull, byId, key) {
   if (byFull[key]) return byFull[key];
   const bare = key.includes("/") ? key.slice(key.indexOf("/") + 1) : key;
   if (byId[bare]) return byId[bare];
+  // Dynamic provider lists (e.g. Ollama) carry a tag suffix ("…:latest") that
+  // custom-model rows don't store — retry tag-stripped keys before the
+  // name-heuristic fallback, which would otherwise shadow the user's per-model
+  // window config with generic pattern caps.
+  const colon = key.indexOf(":");
+  if (colon !== -1) {
+    const taglessFull = key.slice(0, colon);
+    if (byFull[taglessFull]) return byFull[taglessFull];
+    const taglessBare = taglessFull.includes("/") ? taglessFull.slice(taglessFull.indexOf("/") + 1) : taglessFull;
+    if (byId[taglessBare]) return byId[taglessBare];
+  }
   const alias = key.includes("/") ? key.slice(0, key.indexOf("/")) : null;
   const provider = alias ? (ALIAS_TO_ID[alias] || alias) : null;
   const c = getCapabilitiesForModel(provider, bare);

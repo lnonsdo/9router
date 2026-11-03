@@ -19,9 +19,17 @@ import { ROLE, OPENAI_BLOCK } from "../schema/index.js";
  * - tool role maps to tool (Ollama supports tool messages)
  */
 export function openaiToOllamaRequest(model, body, stream) {
+  const normalized = normalizeMessages(body.messages);
+  // Ollama chat templates (Qwen3 et al.) raise "System message must be at the
+  // beginning." when a system/developer row lands mid-conversation — upstack
+  // Responses-API input can carry those rows mid-stream. Stable-move them to
+  // the front so the template's system branch only ever sees a leading row.
+  const systemRows = normalized.filter((m) => m?.role === ROLE.SYSTEM || m?.role === ROLE.DEVELOPER);
   const result = {
     model: model,
-    messages: normalizeMessages(body.messages),
+    messages: systemRows.length
+      ? [...systemRows, ...normalized.filter((m) => m?.role !== ROLE.SYSTEM && m?.role !== ROLE.DEVELOPER)]
+      : normalized,
     stream: stream
   };
 

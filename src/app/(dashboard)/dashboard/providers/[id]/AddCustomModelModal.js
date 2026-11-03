@@ -10,6 +10,11 @@ const defaultCaps = () => Object.fromEntries(Object.keys(CAPACITY_META).map((key
 export default function AddCustomModelModal({ isOpen, providerAlias, providerDisplayAlias, onSave, onClose }) {
   const [modelId, setModelId] = useState("");
   const [caps, setCaps] = useState(defaultCaps);
+  // Window overrides live outside the boolean caps map so the reset and the
+  // badge loops (both keyed off CAPACITY_META) never see them. Strings while
+  // editing; only valid positive integers are merged into caps on save.
+  const [contextWindow, setContextWindow] = useState("");
+  const [maxOutput, setMaxOutput] = useState("");
   const [testStatus, setTestStatus] = useState(null); // null | "testing" | "ok" | "error"
   const [testError, setTestError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -18,7 +23,7 @@ export default function AddCustomModelModal({ isOpen, providerAlias, providerDis
 
   // Reset state when modal opens
   useEffect(() => {
-    if (isOpen) { setModelId(""); setCaps(defaultCaps()); setTransport(""); setTestStatus(null); setTestError(""); }
+    if (isOpen) { setModelId(""); setCaps(defaultCaps()); setContextWindow(""); setMaxOutput(""); setTransport(""); setTestStatus(null); setTestError(""); }
   }, [isOpen]);
 
   // Strip provider's own alias prefix (e.g. "cc/model" -> "model" for cc provider)
@@ -52,9 +57,16 @@ export default function AddCustomModelModal({ isOpen, providerAlias, providerDis
     if (!cleanId || saving) return;
     setSaving(true);
     try {
+      // Merge the window overrides into caps; blanks/invalid stay unset and the
+      // API whitelist drops anything that is not a positive integer.
+      const merged = { ...caps };
+      const ctx = Number(contextWindow);
+      const out = Number(maxOutput);
+      if (Number.isInteger(ctx) && ctx > 0) merged.contextWindow = ctx;
+      if (Number.isInteger(out) && out > 0) merged.maxOutput = out;
       // caps.stt is UI-only; the parent save flow derives the model type from
       // it and forwards the pinned transport (null unless the caller picked one).
-      await onSave(cleanId, caps, caps.stt ? transport : null);
+      await onSave(cleanId, merged, caps.stt ? transport : null);
     } finally {
       setSaving(false);
     }
@@ -108,6 +120,34 @@ export default function AddCustomModelModal({ isOpen, providerAlias, providerDis
               />
             ))}
           </div>
+        </div>
+
+        {/* Window overrides (tokens) — self-hosted models differ per deployment
+            (e.g. an Ollama server's num_ctx), so they are user-provided rather
+            than inferred. Blank keeps the heuristic-derived value. */}
+        <div>
+          <label className="text-sm font-medium mb-1.5 block">Context limits (tokens)</label>
+          <div className="flex gap-2">
+            <input
+              type="number"
+              min="1"
+              value={contextWindow}
+              onChange={(e) => setContextWindow(e.target.value)}
+              placeholder="Context window"
+              className="flex-1 px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
+            />
+            <input
+              type="number"
+              min="1"
+              value={maxOutput}
+              onChange={(e) => setMaxOutput(e.target.value)}
+              placeholder="Max output"
+              className="flex-1 px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
+            />
+          </div>
+          <p className="text-xs text-text-muted mt-1">
+            Optional. Blank keeps the known defaults — set these when self-hosting (e.g. Ollama num_ctx).
+          </p>
         </div>
 
         {/* STT is a model TYPE, not a chat capability: the save flow turns this

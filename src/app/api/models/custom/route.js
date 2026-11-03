@@ -4,12 +4,20 @@ import { CAPACITY_META, isSttTransport } from "@/shared/constants/models";
 
 export const dynamic = "force-dynamic";
 
+// Numeric window overrides accepted alongside the boolean capacities. Keys must
+// mirror what /api/models spreads into the served caps (route.js custom branch).
+const NUMERIC_CAPS = ["contextWindow", "maxOutput"];
+
 // Whitelist capability keys to boolean values — ignore anything else
 function sanitizeCaps(caps) {
   if (!caps || typeof caps !== "object") return null;
   const clean = {};
   for (const key of Object.keys(CAPACITY_META)) {
     if (typeof caps[key] === "boolean") clean[key] = caps[key];
+  }
+  for (const key of NUMERIC_CAPS) {
+    const v = Number(caps[key]);
+    if (Number.isInteger(v) && v > 0) clean[key] = v;
   }
   return Object.keys(clean).length ? clean : null;
 }

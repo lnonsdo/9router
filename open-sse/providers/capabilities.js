@@ -477,6 +477,8 @@ export const PROVIDER_CAPABILITIES = {
   // OpenAI-shaped for chat/responses and accepts native Claude shapes on
   // /v1/messages, so reasoning stays on the openai effort lane.
   "open-design": {
+    "deepseek-v4.1-flash":  { vision: true, reasoning: true, thinkingFormat: "deepseek", contextWindow: 1000000, maxOutput: 128000 },
+    "deepseek-v4-1-flash":  { vision: true, reasoning: true, thinkingFormat: "deepseek", contextWindow: 1000000, maxOutput: 128000 },
     // Hunyuan H4 Preview has no global pattern (hy4*) and reasons on every call.
     "hy4-preview":          { reasoning: true, thinkingFormat: "openai", thinkingCanDisable: false, contextWindow: 1048000, maxOutput: 32000 },
     // Image generation lives on /v1/images/generations — no chat/tool surface.
@@ -632,6 +634,10 @@ export const PATTERN_CAPABILITIES = [
   // ── Qwen (3.5+ = native vision/video; coder & max = text-only; QwQ = thinking-only) ─
   { pattern: "*qwen*vl*",       caps: { vision: true, reasoning: true, thinkingFormat: "qwen", contextWindow: 262144 } },
   { pattern: "*qwen*omni*",     caps: { vision: true, audioInput: true, videoInput: true, reasoning: true, thinkingFormat: "qwen", contextWindow: 262144, maxOutput: 65536 } },
+  // Local ollama uncensored 27B is text-only — must precede *qwen3.8* so the cloud
+  // qwen3.8-max caps (vision/1M) don't leak onto it. Windows here are the model's
+  // architectural ceiling; a deployment's real num_ctx is set per model in the UI.
+  { pattern: "qwen3.8-27b*",    caps: { vision: false, videoInput: false, reasoning: true, contextWindow: 262144, maxOutput: 65536 } },
   // qwen3.8-max adds vision (unlike the text-only qwen3.7-max) — must precede *qwen*max*.
   { pattern: "*qwen3.8*",       caps: { vision: true, videoInput: true, reasoning: true, thinkingFormat: "qwen", contextWindow: 1000000, maxOutput: 65536 } },
   { pattern: "*qwen*coder*",    caps: { reasoning: true, thinkingFormat: "qwen", contextWindow: 1000000 } },

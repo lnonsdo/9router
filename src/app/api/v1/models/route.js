@@ -59,6 +59,36 @@ function comboSeatCapabilities(seat) {
   return getCapabilitiesForModel(ALIAS_TO_PROVIDER_ID[alias] || alias, seat.slice(slash + 1));
 }
 
+// Custom-model rows carry the user's per-model caps (window + toggles), set
+// when self-hosting where the real values differ per deployment. Dynamically
+// listed ids often carry an Ollama-style tag suffix ("…:latest") the row
+// doesn't store, so match exact first, then tag-stripped.
+function findCustomCaps(modelId, customModels) {
+  const bare = modelId.includes("/") ? modelId.slice(modelId.indexOf("/") + 1) : modelId;
+  const colon = bare.indexOf(":");
+  const tagless = colon === -1 ? bare : bare.slice(0, colon);
+  const ids = colon === -1 ? [bare] : [bare, tagless];
+  for (const id of ids) {
+    const row = customModels.find((m) => m?.id === id && (!m.type || m.type === "llm"));
+    if (row?.caps) return row.caps;
+  }
+  return null;
+}
+
+// Overlay the user's caps onto resolved capabilities. Only booleans and
+// positive finite numbers pass — the API whitelist validates on write but the
+// rows are stored JSON, so stay defensive here.
+function applyCustomCaps(caps, customCaps) {
+  if (!customCaps) return caps;
+  const merged = { ...(caps || {}) };
+  for (const [key, value] of Object.entries(customCaps)) {
+    if (typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value) && value > 0)) {
+      merged[key] = value;
+    }
+  }
+  return merged;
+}
+
 // Per-provider live model resolvers. Each receives a connection record and
 // returns { models: [{ id, name? }, ...] } | null on failure.
 // Adding a provider here makes /v1/models prefer the live catalog for it.
@@ -585,7 +615,8 @@ export async function buildModelsList(kindFilter, options = {}) {
         // dynamically-discovered LLM models still surface vision/reasoning/search/tools.
         const liveCaps = liveCapabilitiesById.get(modelId);
         const serviceCaps = capabilitiesFromServiceKind(customKind || liveKind);
-        const caps = liveCaps || serviceCaps || (kind === LLM_KIND ? getCapabilitiesForModel(providerId, modelId) : null);
+        const resolvedCaps = liveCaps || serviceCaps || (kind === LLM_KIND ? getCapabilitiesForModel(providerId, modelId) : null);
+        const caps = applyCustomCaps(resolvedCaps, findCustomCaps(modelId, customModels));
         if (caps) model.capabilities = caps;
         // Token limits under the snake_case names the OpenAI/OpenRouter
         // convention uses. `capabilities.contextWindow` is camelCase and nested,
